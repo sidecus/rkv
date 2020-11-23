@@ -1,8 +1,28 @@
-package raft
+package net
 
 import (
 	"errors"
 )
+
+// MessageType message type used by raft nodes
+type MessageType string
+
+// allowed raftMessageType values
+const (
+	MsgVote          = "Vote"
+	MsgRequestVote   = "RequestVote"
+	MsgHeartbeat     = "Heartbeat"
+	MsgStartElection = "StartElection" // dummy message to handle new election
+	MsgSendHeartBeat = "SendHeartbeat" // dummy message to send heartbeat
+)
+
+// Message object used by raft
+type Message struct {
+	NodeID  int
+	Term    int
+	MsgType MessageType
+	Data    int
+}
 
 // INetwork interfaces defines the interface for the underlying communication among nodes
 type INetwork interface {

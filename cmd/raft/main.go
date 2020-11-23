@@ -39,16 +39,16 @@ func main() {
 func printUsage() {
 	fmt.Println("Two modes:")
 	fmt.Println("1. raft local")
-	fmt.Println("2. raft rpc <peer1url> <peer2url> ...")
+	fmt.Println("2. raft rpc <id> <peer1url> <peer2url> ...")
 }
 
 func runLocal() {
-	rn, _ := channelnet.CreateChannelNetwork(3)
+	net, _ := channelnet.CreateChannelNetwork(3)
 	logger := log.New(log.Writer(), log.Prefix(), log.Flags())
 
 	nodes := make([]raft.INode, 3)
 	for i := range nodes {
-		nodes[i] = raft.CreateNode(i, 3, rn, logger)
+		nodes[i] = raft.CreateNode(i, 3, net, logger)
 	}
 
 	var wg sync.WaitGroup
