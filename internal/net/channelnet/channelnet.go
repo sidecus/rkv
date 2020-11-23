@@ -1,41 +1,31 @@
 package channelnet
 
 import (
-	"github.com/sidecus/raft/internal/net"
+	"github.com/sidecus/raft/pkg/network"
 )
-
-// boradcastAddress is a special NodeId representing broadcasting to all other nodes
-const boradcastAddress = -1
-
-// channelNetworkReq request type used by channelNetworkReq internally to send Message to nodes
-type channelNetworkReq struct {
-	sender   int
-	receiver int
-	message  *net.Message
-}
 
 // channelNetwork is a channel based network implementation without real RPC calls
 type channelNetwork struct {
 	size  int
-	cin   chan channelNetworkReq
-	couts []chan *net.Message
+	cin   chan *network.Request
+	couts []chan *network.Message
 }
 
 // CreateChannelNetwork creates a channelNetwork (local machine channel based network)
 // and starts it. It mimics real network behavior by retrieving requests from cin and dispatch to couts
-func CreateChannelNetwork(n int) (net.INetwork, error) {
+func CreateChannelNetwork(n int) (network.INetwork, error) {
 	if n <= 0 || n > 1024 {
-		return nil, net.ErrorInvalidNodeCount
+		return nil, network.ErrorInvalidNodeCount
 	}
 
-	cin := make(chan channelNetworkReq, 100)
-	couts := make([]chan *net.Message, n)
+	cin := make(chan *network.Request, 100)
+	couts := make([]chan *network.Message, n)
 	for i := range couts {
 		// non buffered channel to mimic unrealiable network
-		couts[i] = make(chan *net.Message)
+		couts[i] = make(chan *network.Message)
 	}
 
-	net := &channelNetwork{
+	nw := &channelNetwork{
 		size:  n,
 		cin:   cin,
 		couts: couts,
@@ -43,25 +33,25 @@ func CreateChannelNetwork(n int) (net.INetwork, error) {
 
 	// start the network, which reads from cin and dispatches to one or more couts
 	go func() {
-		for r := range net.cin {
-			if r.receiver != boradcastAddress {
-				net.sendToNode(r.receiver, r.message)
+		for r := range nw.cin {
+			if r.Receiver != network.BoradcastAddress {
+				nw.sendToNode(r.Receiver, r.Message)
 			} else {
 				// broadcast to others
-				for i := range net.couts {
-					if i != r.sender {
-						net.sendToNode(i, r.message)
+				for i := range nw.couts {
+					if i != r.Sender {
+						nw.sendToNode(i, r.Message)
 					}
 				}
 			}
 		}
 	}()
 
-	return net, nil
+	return nw, nil
 }
 
 // sendToNode sends one message to one receiver
-func (cn *channelNetwork) sendToNode(receiver int, msg *net.Message) {
+func (cn *channelNetwork) sendToNode(receiver int, msg *network.Message) {
 	// nonblocking lossy sending using channel
 	ch := cn.couts[receiver]
 	select {
@@ -71,22 +61,22 @@ func (cn *channelNetwork) sendToNode(receiver int, msg *net.Message) {
 }
 
 // Send sends a message from the source node to target node
-func (cn *channelNetwork) Send(sourceNodeID int, targetNodeID int, msg *net.Message) error {
+func (cn *channelNetwork) Send(sourceNodeID int, targetNodeID int, msg *network.Message) error {
 	switch {
 	case sourceNodeID > cn.size:
-		return net.ErrorInvalidNodeID
+		return network.ErrorInvalidNodeID
 	case targetNodeID > cn.size:
-		return net.ErrorInvalidNodeID
+		return network.ErrorInvalidNodeID
 	case sourceNodeID == targetNodeID:
-		return net.ErrorSendToSelf
+		return network.ErrorSendToSelf
 	case msg == nil:
-		return net.ErrorInvalidMessage
+		return network.ErrorInvalidMessage
 	}
 
-	req := channelNetworkReq{
-		sender:   sourceNodeID,
-		receiver: targetNodeID,
-		message:  msg,
+	req := &network.Request{
+		Sender:   sourceNodeID,
+		Receiver: targetNodeID,
+		Message:  msg,
 	}
 
 	cn.cin <- req
@@ -95,18 +85,18 @@ func (cn *channelNetwork) Send(sourceNodeID int, targetNodeID int, msg *net.Mess
 }
 
 // Broadcast a message to all other nodes
-func (cn *channelNetwork) Broadcast(sourceNodeID int, msg *net.Message) error {
+func (cn *channelNetwork) Broadcast(sourceNodeID int, msg *network.Message) error {
 	switch {
 	case sourceNodeID > cn.size:
-		return net.ErrorInvalidNodeID
+		return network.ErrorInvalidNodeID
 	case msg == nil:
-		return net.ErrorInvalidMessage
+		return network.ErrorInvalidMessage
 	}
 
-	req := channelNetworkReq{
-		sender:   sourceNodeID,
-		receiver: boradcastAddress,
-		message:  msg,
+	req := &network.Request{
+		Sender:   sourceNodeID,
+		Receiver: network.BoradcastAddress,
+		Message:  msg,
 	}
 
 	cn.cin <- req
@@ -115,9 +105,9 @@ func (cn *channelNetwork) Broadcast(sourceNodeID int, msg *net.Message) error {
 }
 
 // GetRecvChannel returns the receiving channel for the given node
-func (cn *channelNetwork) GetRecvChannel(nodeID int) (chan *net.Message, error) {
+func (cn *channelNetwork) GetRecvChannel(nodeID int) (chan *network.Message, error) {
 	if nodeID > cn.size {
-		return nil, net.ErrorInvalidNodeID
+		return nil, network.ErrorInvalidNodeID
 	}
 
 	return cn.couts[nodeID], nil

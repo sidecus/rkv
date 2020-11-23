@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sidecus/raft/internal/net"
 	"github.com/sidecus/raft/internal/util"
+	"github.com/sidecus/raft/pkg/network"
 )
 
 // nodeState - node state type, can be one of 3: follower, candidate or leader
@@ -31,9 +31,9 @@ type INode interface {
 	resetHeartbeatTimer()
 
 	startElection() bool
-	vote(electMsg *net.Message) bool
-	countVotes(ballotMsg *net.Message) bool
-	ackHeartbeat(hbMsg *net.Message) bool
+	vote(electMsg *network.Message) bool
+	countVotes(ballotMsg *network.Message) bool
+	ackHeartbeat(hbMsg *network.Message) bool
 	sendHeartbeat() bool
 
 	// Start starts the raft node event loop.
@@ -59,12 +59,12 @@ type raftNode struct {
 	heartbeatTimer *time.Timer // timer for heartbeat, used by leader
 
 	stateMachine raftStateMachine
-	network      net.INetwork // underlying network implementation for sending/receiving messages
+	network      network.INetwork // underlying network implementation for sending/receiving messages
 	logger       *log.Logger
 }
 
 // CreateNode creates a new raft node
-func CreateNode(id int, size int, network net.INetwork, logger *log.Logger) INode {
+func CreateNode(id int, size int, network network.INetwork, logger *log.Logger) INode {
 	// Create timer objects (stopped)
 	electionTimer := time.NewTimer(time.Hour)
 	util.StopTimer(electionTimer)
@@ -146,7 +146,7 @@ func (node *raftNode) startElection() bool {
 }
 
 // vote for newer term and when we haven't voted for it yet
-func (node *raftNode) vote(electMsg *net.Message) bool {
+func (node *raftNode) vote(electMsg *network.Message) bool {
 	if electMsg.Term > node.term && electMsg.Term > node.lastVotedTerm {
 		node.lastVotedTerm = electMsg.Term
 		node.logger.Printf("\U0001f4e7 T%d: Node%d votes for Node%d \n", electMsg.Term, node.id, electMsg.NodeID)
@@ -158,7 +158,7 @@ func (node *raftNode) vote(electMsg *net.Message) bool {
 }
 
 // countVotes counts votes received and decide whether we win
-func (node *raftNode) countVotes(ballotMsg *net.Message) bool {
+func (node *raftNode) countVotes(ballotMsg *network.Message) bool {
 	if ballotMsg.Data == node.id && ballotMsg.Term == node.term {
 		node.votes[ballotMsg.NodeID] = true
 
@@ -181,7 +181,7 @@ func (node *raftNode) countVotes(ballotMsg *net.Message) bool {
 }
 
 // ackHeartbeat acks a heartbeat message
-func (node *raftNode) ackHeartbeat(hbMsg *net.Message) bool {
+func (node *raftNode) ackHeartbeat(hbMsg *network.Message) bool {
 	// handle heartbeat message with the same or newer term
 	if hbMsg.Term >= node.term {
 		node.logger.Printf("\U0001f493 T%d: Node%d <- Node%d\n", hbMsg.Term, node.id, hbMsg.NodeID)
@@ -200,7 +200,7 @@ func (node *raftNode) sendHeartbeat() bool {
 
 // processMessage passes the message through the node statemachine
 // it returns a signal about whether the node should stop
-func (node *raftNode) processMessage(msg *net.Message) bool {
+func (node *raftNode) processMessage(msg *network.Message) bool {
 	node.stateMachine.processMessage(node, msg)
 	return false
 }
@@ -213,7 +213,7 @@ func (node *raftNode) Start(wg *sync.WaitGroup) {
 
 	node.resetElectionTimer()
 
-	var msg *net.Message
+	var msg *network.Message
 	quit := false
 	msgCh, _ := node.network.GetRecvChannel(node.id)
 	electCh := node.electionTimer.C

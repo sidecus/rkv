@@ -1,50 +1,48 @@
 package raft
 
-import (
-	"github.com/sidecus/raft/internal/net"
-)
+import "github.com/sidecus/raft/pkg/network"
 
-func (node *raftNode) createRequestVoteMessage() *net.Message {
-	return &net.Message{
+func (node *raftNode) createRequestVoteMessage() *network.Message {
+	return &network.Message{
 		NodeID:  node.id,
 		Term:    node.term,
-		MsgType: net.MsgRequestVote,
+		MsgType: network.MsgRequestVote,
 		Data:    node.id,
 	}
 }
 
-func (node *raftNode) createStartElectionMessage() *net.Message {
-	return &net.Message{
+func (node *raftNode) createStartElectionMessage() *network.Message {
+	return &network.Message{
 		NodeID:  node.id,
 		Term:    node.term,
-		MsgType: net.MsgStartElection,
+		MsgType: network.MsgStartElection,
 		Data:    node.id,
 	}
 }
 
-func (node *raftNode) createVoteMessage(electMsg *net.Message) *net.Message {
-	return &net.Message{
+func (node *raftNode) createVoteMessage(electMsg *network.Message) *network.Message {
+	return &network.Message{
 		NodeID:  node.id,
 		Term:    electMsg.Term,
-		MsgType: net.MsgVote,
+		MsgType: network.MsgVote,
 		Data:    electMsg.NodeID,
 	}
 }
 
-func (node *raftNode) createHeartBeatMessage() *net.Message {
-	return &net.Message{
+func (node *raftNode) createHeartBeatMessage() *network.Message {
+	return &network.Message{
 		NodeID:  node.id,
 		Term:    node.term,
-		MsgType: net.MsgHeartbeat,
+		MsgType: network.MsgHeartbeat,
 		Data:    node.id,
 	}
 }
 
-func (node *raftNode) createSendHeartBeatMessage() *net.Message {
-	return &net.Message{
+func (node *raftNode) createSendHeartBeatMessage() *network.Message {
+	return &network.Message{
 		NodeID:  node.id,
 		Term:    node.term,
-		MsgType: net.MsgSendHeartBeat,
+		MsgType: network.MsgSendHeartBeat,
 		Data:    node.id,
 	}
 }
