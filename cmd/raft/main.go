@@ -1,10 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -21,29 +21,41 @@ const (
 var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
 
 func main() {
-	if len(os.Args) <= 1 {
+	if len(os.Args) < 2 {
 		printUsage()
-		return
+		os.Exit(1)
 	}
 
-	mode := os.Args[1]
-	args := os.Args[2:]
-
-	if strings.EqualFold(mode, localMode) {
-		// local mode
+	switch os.Args[1] {
+	case localMode:
+		rpcCmd := flag.NewFlagSet("local", flag.ExitOnError)
+		rpcCmd.Parse(os.Args[2:])
 		runLocal()
-	} else if strings.EqualFold(mode, rpcMode) {
-		// remote mode
-		runRPC(args)
-	} else {
+	case rpcMode:
+		rpcCmd := flag.NewFlagSet("rpc", flag.ExitOnError)
+		nodeID := rpcCmd.Int("nodeid", 0, "current node ID. 0 to n where n is total nodes")
+		addresses := rpcCmd.String("addresses", "", "comma separated node addresses, ordered by nodeID")
+
+		rpcCmd.Parse(os.Args[2:])
+		addressArray := strings.Split(*addresses, ",")
+
+		if *nodeID == -1 || len(addressArray) < 3 || *nodeID >= len(addressArray) {
+			printUsage()
+			os.Exit(1)
+		}
+		runRPC(*nodeID, addressArray)
+	default:
 		printUsage()
+		os.Exit(1)
 	}
 }
 
 func printUsage() {
-	fmt.Println("Two modes:")
-	fmt.Println("1. raft local")
-	fmt.Println("2. raft rpc <id> <node0url> <node1url> ...")
+	fmt.Println("Usage:")
+	fmt.Println("1. Local mode - Runs on a channel based dummy network locally")
+	fmt.Println("   raft local")
+	fmt.Println("2. gRPC mode - Use this to run the raft cluster across machines/processes/pods")
+	fmt.Println("   raft rpc -nodeid id -addresses node0address,node1address,node2addresses...")
 }
 
 func runLocal() {
@@ -68,17 +80,7 @@ func runLocal() {
 	wg.Wait()
 }
 
-func runRPC(args []string) {
-	if len(args) < 2 {
-		panic("invalid rpc args. need id and at least 2 node urls")
-	}
-
-	nodeID, err := strconv.Atoi(args[0])
-	if err != nil {
-		panic(err.Error())
-	}
-
-	addresses := args[1:]
+func runRPC(nodeID int, addresses []string) {
 	endpoints := make([]grpcnet.NodeEndpoint, len(addresses))
 	for i, v := range addresses {
 		endpoints[i].NodeID = i
