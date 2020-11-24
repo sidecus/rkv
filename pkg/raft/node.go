@@ -52,7 +52,7 @@ type raftNode struct {
 	term          int
 	state         nodeState
 	lastVotedTerm int
-	votes         []bool
+	votes         map[int]bool
 	size          int
 
 	electionTimer  *time.Timer // timer for election timeout, used by follower and candidate
@@ -76,7 +76,7 @@ func CreateNode(id int, size int, network network.INetwork, logger *log.Logger) 
 		term:          0,
 		state:         follower,
 		lastVotedTerm: 0,
-		votes:         make([]bool, size),
+		votes:         make(map[int]bool),
 		size:          size,
 
 		electionTimer:  electionTimer,
@@ -128,9 +128,7 @@ func (node *raftNode) startElection() bool {
 
 	// only start real election when we haven't voted for others for a higher term
 	if node.lastVotedTerm < node.term {
-		for i := range node.votes {
-			node.votes[i] = false
-		}
+		node.votes = make(map[int]bool)
 		// vote for self first
 		node.votes[node.id] = true
 		node.lastVotedTerm = node.term
@@ -163,10 +161,8 @@ func (node *raftNode) countVotes(ballotMsg *network.Message) bool {
 		node.votes[ballotMsg.NodeID] = true
 
 		totalVotes := 0
-		for _, v := range node.votes {
-			if v {
-				totalVotes++
-			}
+		for range node.votes {
+			totalVotes++
 		}
 
 		if totalVotes > node.size/2 {

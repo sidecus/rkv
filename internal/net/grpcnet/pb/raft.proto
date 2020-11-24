@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+option go_package = "github.com/sidecus/raft/internal/net/grpcnet/pb";
+option java_multiple_files = true;
+option java_package = "sidecus.raft.net.grpc";
+option java_outer_classname = "RaftProto";
+
+package pb;
+
+// The greeting service definition.
+service Rafter {
+  // Sends a message
+  rpc SendMessage (RaftMessage) returns (RaftReply) {}
+}
+
+// The request message - same shape as network.RaftMessage
+message RaftMessage {
+  int64 nodeID = 1;
+  int64 term = 2;
+  string msgType = 3;
+  int64 data = 4;
+}
+
+message RaftReply {
+}

@@ -16,5 +16,6 @@
 
 .VSCodeCounter
 
-# mac binary
+# other files to ignore
 /cmd/raft/raft
+*_debug_bin

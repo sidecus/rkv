@@ -6,6 +6,7 @@ import (
 
 // INetwork interfaces defines the interface for the underlying communication among nodes
 type INetwork interface {
+	Start()
 	Send(sourceNodeID int, targetNodID int, msg *Message) error
 	Broadcast(sourceNodeID int, msg *Message) error
 	GetRecvChannel(nodeID int) (chan *Message, error)
