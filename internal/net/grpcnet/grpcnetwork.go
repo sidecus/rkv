@@ -43,9 +43,9 @@ type peerNode struct {
 	grpcClient pb.RafterClient
 }
 
-// CreateGRPCNetwork creates a grpc based raft network for a node to consume
+// NewGRPCNetwork creates a grpc based raft network for a node to consume
 // It starts the grpc server on a separate go routine and returns immediately
-func CreateGRPCNetwork(selfNodeID int, endpoints []NodeEndpoint, logger *log.Logger) (network.INetwork, error) {
+func NewGRPCNetwork(selfNodeID int, endpoints []NodeEndpoint, logger *log.Logger) (network.INetwork, error) {
 	var lisEndPoint string
 	for i := range endpoints {
 		if endpoints[i].NodeID == selfNodeID {

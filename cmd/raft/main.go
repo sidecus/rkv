@@ -69,11 +69,10 @@ func runLocal() {
 		nodes[i] = raft.CreateNode(i, 3, net, logger)
 	}
 
-	var wg sync.WaitGroup
-
 	// Create nodes and start them
+	var wg sync.WaitGroup
+	wg.Add(len(nodes))
 	for i := range nodes {
-		wg.Add(1)
 		go nodes[i].Start(&wg)
 	}
 
@@ -88,7 +87,7 @@ func runRPC(nodeID int, addresses []string) {
 	}
 
 	// Create undlying grpc based network
-	net, err := grpcnet.CreateGRPCNetwork(nodeID, endpoints, logger)
+	net, err := grpcnet.NewGRPCNetwork(nodeID, endpoints, logger)
 	if err != nil {
 		panic(err.Error())
 	}
