@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+option go_package = "github.com/sidecus/raft/pkg/kvstore/rpc/pb";
+option java_multiple_files = true;
+option java_package = "com.github.sidecus.raft.pkg.kvstore.rpc";
+option java_outer_classname = "KvStoreRafter";
+
+package pb;
+
+// The service definition for the raft based kvstore
+service KVStoreRaft {
+  // AppendEntries
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesReply) {}
+  // RequestVote
+  rpc RequestVote (RequestVoteRequest) returns (RequestVoteReply) {}
+
+  // KVStore write operations, needs to be processed by raft node and tracked by logs
+  rpc Set (SetRequest) returns (SetReply) {}
+  rpc Delete (DeleteRequest) returns (DeleteReply) {}
+
+  // KVStore read operations, no need to be tracked by logs
+  rpc Get (GetRequest) returns (GetReply) {}
+}
+
+message KVCmdData {
+  string key = 1;
+  string value = 2;
+}
+
+message KVCmd {
+  int32 CmdType = 1;
+  KVCmdData Data = 2;
+}
+
+message LogEntry {
+  int64 index = 1;
+  int64 term = 2;
+  bool committed = 3;
+  KVCmd cmd = 4;
+}
+
+// The append entry request
+message AppendEntriesRequest {
+  int64 term = 1;
+  int64 leaderId = 2;
+  int64 prevLogIndex = 3;
+  int64 prevLogTerm = 4;
+  int64 leaderCommit = 5;
+  repeated LogEntry entries = 6;
+}
+
+// Append entries reply
+message AppendEntriesReply {
+  int64 term = 1;
+  int64 leaderID = 2;
+  bool success = 3;
+}
+
+// The request vote request
+message RequestVoteRequest {
+  int64 term = 1;
+  int64 candidateId = 2;
+  int64 lastLogIndex = 3;
+  int64 lastLogTerm = 4;
+}
+
+// The request vote response
+message RequestVoteReply {
+  int64 term = 1;
+  int64 votedTerm = 2;
+  bool voteGranted = 3;
+}
+
+// SetRequest is the message used to set a value into kvstore
+message SetRequest {
+  string key = 1;
+  string value = 2;
+}
+
+// SetRequest is the reply message for kvstore set operation
+message SetReply {
+  bool success = 1;
+}
+
+// DeleteRequest is the message used to delete a value from kvstore
+message DeleteRequest {
+  string key = 1;
+}
+
+// DeleteReply is the reply message for kvstore delete operation
+message DeleteReply {
+  bool success = 1;
+}
+
+// GetRequest is the message used to get a value from kvstore
+message GetRequest {
+  string key = 1;
+}
+
+// GetReply is the reply message for kvstore get operation
+message GetReply {
+  bool success = 1;
+  string value = 2;
+}
+

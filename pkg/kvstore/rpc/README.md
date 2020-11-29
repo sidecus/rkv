@@ -7,5 +7,5 @@ go get google.golang.org/grpc/cmd/protoc-gen-go-grpc
 
 # Generate proto file and grpc file
 ```bash
-protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative pb/raft.proto
+protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative pb/kvstoreraft.proto
 ```

@@ -1,234 +1,206 @@
 package raft
 
 import (
-	"log"
-	"math/rand"
+	"errors"
+	"fmt"
 	"sync"
-	"time"
-
-	"github.com/sidecus/raft/internal/util"
-	"github.com/sidecus/raft/pkg/network"
 )
 
-// nodeState - node state type, can be one of 3: follower, candidate or leader
-type nodeState int
+// NodeState is the state of the node
+type NodeState int
 
-// NodeState allowed values
 const (
-	follower  = 0
-	candidate = 1
-	leader    = 2
+	//Follower state
+	Follower = 1
+	// Candidate state
+	Candidate = 2
+	// Leader state
+	Leader = 3
 )
 
-// INode defines the interface for a node
+// ErrorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var ErrorNoLeaderAvailable = errors.New("No leader currently available")
+
+// INode represents one raft node
 type INode interface {
-	getState() nodeState
-	setState(newState nodeState) nodeState
+	// Raft
+	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
+	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
+	OnTimer()
 
-	stopElectionTimer()
-	resetElectionTimer()
-	stopHeartbeatTimer()
-	resetHeartbeatTimer()
+	// Data related
+	Get(*GetRequest) (*GetReply, error)
+	Execute(*StateMachineCmd) (bool, error)
 
-	startElection() bool
-	vote(electMsg *network.Message) bool
-	countVotes(ballotMsg *network.Message) bool
-	ackHeartbeat(hbMsg *network.Message) bool
-	sendHeartbeat() bool
-
-	// Start starts the raft node event loop.
-	// If a WaitGroup parameter is given, it'll be signaled when the event loop finishes
-	// Usually this should be called in its own go routine
-	Start(wg *sync.WaitGroup)
+	// Lifecycle
+	Start()
+	Stop()
 }
 
-const minElectionTimeoutMs = 3500                    // millisecond
-const maxElectionTimeoutMs = 5000                    // millisecond
-const heartbeatTimeoutMs = minElectionTimeoutMs + 20 // millisecond, larger value so that we can mimic some failures
+// node A raft node
+type node struct {
+	// node lock
+	mu sync.RWMutex
 
-// raftNode represents a raft node
-type raftNode struct {
-	id            int
-	term          int
-	state         nodeState
-	lastVotedTerm int
-	votes         map[int]bool
-	size          int
+	// data for all states
+	clusterSize   int
+	nodeID        int
+	nodeState     NodeState
+	currentTerm   int
+	currentLeader int
+	votedFor      int
+	logMgr        *logManager
+	stateMachine  IStateMachine
+	proxy         IPeerProxy
 
-	electionTimer  *time.Timer // timer for election timeout, used by follower and candidate
-	heartbeatTimer *time.Timer // timer for heartbeat, used by leader
+	// leader only
+	nextIndex  []int
+	matchIndex []int
 
-	stateMachine raftStateMachine
-	network      network.INetwork // underlying network implementation for sending/receiving messages
-	logger       *log.Logger
+	// candidate only
+	votes map[int]bool
 }
 
-// CreateNode creates a new raft node
-func CreateNode(id int, size int, network network.INetwork, logger *log.Logger) INode {
-	// Create timer objects (stopped)
-	electionTimer := time.NewTimer(time.Hour)
-	util.StopTimer(electionTimer)
-	heartbeatTimer := time.NewTimer(time.Hour)
-	util.StopTimer(heartbeatTimer)
+// NewNode creates a new node
+func NewNode(id int, size int, sm IStateMachine, proxy IPeerProxy) INode {
+	n := &node{
+		mu:            sync.RWMutex{},
+		clusterSize:   size,
+		nodeID:        id,
+		nodeState:     Follower,
+		currentTerm:   0,
+		currentLeader: -1,
+		votedFor:      -1,
+		logMgr:        newLogMgr(),
+		stateMachine:  sm,
+		proxy:         proxy,
+		nextIndex:     make([]int, size),
+		matchIndex:    make([]int, size),
+		votes:         make(map[int]bool, size),
+	}
 
-	return &raftNode{
-		id:            id,
-		term:          0,
-		state:         follower,
-		lastVotedTerm: 0,
-		votes:         make(map[int]bool),
-		size:          size,
+	return n
+}
 
-		electionTimer:  electionTimer,
-		heartbeatTimer: heartbeatTimer,
+// OnTimer handles a timer event.
+// Action is based on node's current state
+func (n *node) OnTimer() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-		stateMachine: raftSM,
-		network:      network,
-		logger:       logger,
+	if n.nodeState == Follower || n.nodeState == Candidate {
+		n.startElection()
+	} else if n.nodeState == Leader {
+		n.sendHeartbeat()
 	}
 }
 
-// getState returns the node's current state
-func (node *raftNode) getState() nodeState {
-	return node.state
+// Start starts the node
+func (n *node) Start() {
+	StartRaftTimer(n)
+	n.refreshTimer()
 }
 
-// setState changes the node's state
-func (node *raftNode) setState(newState nodeState) nodeState {
-	oldState := node.state
-	node.state = newState
-	return oldState
+func (n *node) Stop() {
+	// We don't wait for the goroutine to finish, just no need
+	StopRaftTimer()
 }
 
-// stopElectionTimer stops the election timer for the node
-func (node *raftNode) stopElectionTimer() {
-	util.StopTimer(node.electionTimer)
+// Refreshes timer based on current state
+func (n *node) refreshTimer() {
+	RefreshRaftTimer(n.nodeState)
 }
 
-// resetElectionTimer resets the election timer for the node
-func (node *raftNode) resetElectionTimer() {
-	timeout := rand.Intn(maxElectionTimeoutMs-minElectionTimeoutMs) + minElectionTimeoutMs
-	util.ResetTimer(node.electionTimer, time.Duration(timeout)*time.Millisecond)
+// enter candidate state
+func (n *node) enterCandidateState() {
+	n.nodeState = Candidate
+	n.currentTerm++
+	n.currentLeader = -1
+
+	// vote for self first
+	n.votedFor = n.nodeID
+	n.votes = make(map[int]bool, n.clusterSize)
+	n.votes[n.nodeID] = true
+
+	fmt.Printf("T%d: Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
-// stopHeartbeatTimer stops the heart beat timer (none leader scenario)
-func (node *raftNode) stopHeartbeatTimer() {
-	util.StopTimer(node.heartbeatTimer)
-}
-
-// resetHeartbeatTimer resets the heart beat timer for the leader
-func (node *raftNode) resetHeartbeatTimer() {
-	util.ResetTimer(node.heartbeatTimer, time.Duration(heartbeatTimeoutMs)*time.Millisecond)
-}
-
-// startElection starts an election and elect self
-func (node *raftNode) startElection() bool {
-	// set new candidate term
-	node.term++
-
-	// only start real election when we haven't voted for others for a higher term
-	if node.lastVotedTerm < node.term {
-		node.votes = make(map[int]bool)
-		// vote for self first
-		node.votes[node.id] = true
-		node.lastVotedTerm = node.term
-
-		node.logger.Printf("\u270b T%d: Node%d starts election...\n", node.term, node.id)
-		node.network.Broadcast(node.id, node.createRequestVoteMessage())
-	} else {
-		// We are a doomed candidate - alreayd voted for others for current term. Don't start election, wait for next term instead
-		node.logger.Printf("\U0001F613 T%d: Node%d is a doomed candidate, waiting for next term...\n", node.term, node.id)
+// enterLeaderState resets leader indicies. Caller should acquire writer lock
+func (n *node) enterLeaderState() {
+	n.nodeState = Leader
+	n.currentLeader = n.nodeID
+	// reset leader indicies
+	for i := 0; i < n.clusterSize; i++ {
+		n.nextIndex[i] = n.logMgr.lastIndex + 1
+		n.matchIndex[i] = n.logMgr.lastIndex
 	}
 
-	return true
+	fmt.Printf("T%d: Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
-// vote for newer term and when we haven't voted for it yet
-func (node *raftNode) vote(electMsg *network.Message) bool {
-	if electMsg.Term > node.term && electMsg.Term > node.lastVotedTerm {
-		node.lastVotedTerm = electMsg.Term
-		node.logger.Printf("\U0001f4e7 T%d: Node%d votes for Node%d \n", electMsg.Term, node.id, electMsg.NodeID)
-		node.network.Send(node.id, electMsg.NodeID, node.createVoteMessage(electMsg))
-		return true
+// enter follower state and follows new leader (or potential leader)
+func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
+	n.nodeState = Follower
+	n.currentTerm = newTerm
+	n.currentLeader = sourceNodeID
+
+	n.votedFor = -1
+
+	fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
+}
+
+// start an election, caller should acquire write lock
+func (n *node) startElection() {
+	n.enterCandidateState()
+
+	// create RV request
+	req := &RequestVoteRequest{
+		Term:         n.currentTerm,
+		CandidateID:  n.nodeID,
+		LastLogIndex: n.logMgr.lastIndex,
+		LastLogTerm:  n.logMgr.lastTerm,
 	}
 
-	return false
+	// request vote (on different go routines), response will be processed on different go routine
+	n.proxy.RequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
+
+	n.refreshTimer()
 }
 
-// countVotes counts votes received and decide whether we win
-func (node *raftNode) countVotes(ballotMsg *network.Message) bool {
-	if ballotMsg.Data == node.id && ballotMsg.Term == node.term {
-		node.votes[ballotMsg.NodeID] = true
-
-		totalVotes := 0
-		for range node.votes {
-			totalVotes++
-		}
-
-		if totalVotes > node.size/2 {
-			// Won election, start heartbeat
-			node.logger.Printf("\U0001f451 T%d: Node%d won election\n", node.term, node.id)
-			node.sendHeartbeat()
-			return true
-		}
+// send heartbeat, caller should acquire at least reader lock
+func (n *node) sendHeartbeat() {
+	// create RV request
+	req := &AppendEntriesRequest{
+		Term:         n.currentTerm,
+		LeaderID:     n.nodeID,
+		PrevLogIndex: n.logMgr.lastIndex,
+		PrevLogTerm:  n.logMgr.lastTerm,
+		Entries:      []LogEntry{},
+		LeaderCommit: n.logMgr.commitIndex,
 	}
 
-	return false
+	fmt.Printf("T%d: Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
+
+	// send heart beat (on different go routines), response will be processed there
+	n.proxy.AppendEntries(req, func(reply *AppendEntriesReply) { n.handleAppendEntriesReply(reply) })
+
+	// 5.2 - refresh timer
+	n.refreshTimer()
 }
 
-// ackHeartbeat acks a heartbeat message
-func (node *raftNode) ackHeartbeat(hbMsg *network.Message) bool {
-	// handle heartbeat message with the same or newer term
-	if hbMsg.Term >= node.term {
-		node.logger.Printf("\U0001f493 T%d: Node%d <- Node%d\n", hbMsg.Term, node.id, hbMsg.NodeID)
-		node.term = hbMsg.Term
-		return true
+// Check peer's term and follow if it's higher. This will be called upon all RPC request and responses.
+// Returns true if we are following a higher term
+func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSameTerm bool) bool {
+	ret := false
+	if newTerm > n.currentTerm {
+		// Treat the source node as the potential leader for the higher term
+		// Till real heartbeat for that term arrives, the source node potentially knows better about the leader than us
+		n.enterFollowerState(sourceNodeID, newTerm)
+		n.refreshTimer()
+		ret = true
+	} else if newTerm == n.currentTerm && refreshTimerOnSameTerm {
+		n.refreshTimer()
 	}
 
-	return false
-}
-
-// sendHeartbeat sends a heartbeat message
-func (node *raftNode) sendHeartbeat() bool {
-	node.network.Broadcast(node.id, node.createHeartBeatMessage())
-	return true
-}
-
-// processMessage passes the message through the node statemachine
-// it returns a signal about whether the node should stop
-func (node *raftNode) processMessage(msg *network.Message) bool {
-	node.stateMachine.processMessage(node, msg)
-	return false
-}
-
-// Start starts the raft node event loop.
-// If a WaitGroup parameter is given, it'll be signaled when the event loop finishes
-// Usually this should be called in its own go routine
-func (node *raftNode) Start(wg *sync.WaitGroup) {
-	node.logger.Printf("Node%d starting...\n", node.id)
-
-	node.resetElectionTimer()
-
-	var msg *network.Message
-	quit := false
-	msgCh, _ := node.network.GetRecvChannel(node.id)
-	electCh := node.electionTimer.C
-	hbCh := node.heartbeatTimer.C
-
-	for !quit {
-		select {
-		case msg = <-msgCh:
-		case <-electCh:
-			msg = node.createStartElectionMessage()
-		case <-hbCh:
-			msg = node.createSendHeartBeatMessage()
-		}
-
-		// Do the real processing
-		quit = node.processMessage(msg)
-	}
-
-	if wg != nil {
-		wg.Done()
-	}
+	return ret
 }

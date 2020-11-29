@@ -11,7 +11,7 @@
             "mode": "auto",
             "program": "${workspaceRoot}/cmd/raft",
             "env": {},
-            "args": ["rpc", "0", "localhost:27015", "localhost:27016", "localhost:27018"]
+            "args": ["rpc", "-nodeid", "0", "-addresses", "localhost:27015,localhost:27016"]
         }
     ]
 }

@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/sidecus/raft/internal/net/dummynet"
-	"github.com/sidecus/raft/internal/net/grpcnet"
+	"github.com/sidecus/raft/pkg/kvstore"
+	"github.com/sidecus/raft/pkg/kvstore/rpc"
 	"github.com/sidecus/raft/pkg/raft"
 )
 
@@ -30,7 +31,7 @@ func main() {
 	case localMode:
 		rpcCmd := flag.NewFlagSet("local", flag.ExitOnError)
 		rpcCmd.Parse(os.Args[2:])
-		runLocal()
+		//runLocal()
 	case rpcMode:
 		rpcCmd := flag.NewFlagSet("rpc", flag.ExitOnError)
 		nodeID := rpcCmd.Int("nodeid", 0, "current node ID. 0 to n where n is total nodes")
@@ -39,10 +40,6 @@ func main() {
 		rpcCmd.Parse(os.Args[2:])
 		addressArray := strings.Split(*addresses, ",")
 
-		if *nodeID == -1 || len(addressArray) < 3 || *nodeID >= len(addressArray) {
-			printUsage()
-			os.Exit(1)
-		}
 		runRPC(*nodeID, addressArray)
 	default:
 		printUsage()
@@ -58,44 +55,49 @@ func printUsage() {
 	fmt.Println("   raft rpc -nodeid id -addresses node0address,node1address,node2addresses...")
 }
 
-func runLocal() {
-	net, _ := dummynet.CreateDummyNetwork(3)
+func runRPC(nodeID int, addresses []string) {
+	port := getNodePort(nodeID, addresses)
+	var peers []raft.PeerInfo
+	for i, v := range addresses {
+		if i == nodeID {
+			continue
+		}
 
-	// Start network
-	net.Start()
-
-	nodes := make([]raft.INode, 3)
-	for i := range nodes {
-		nodes[i] = raft.CreateNode(i, 3, net, logger)
+		peers = append(peers, raft.PeerInfo{
+			NodeID:   i,
+			Endpoint: v,
+		})
 	}
+	kvStore := kvstore.NewKVStore()
+	proxy := rpc.NewKVStorePeerProxy(peers)
+	node := raft.NewNode(nodeID, len(addresses), kvStore, proxy)
+	rpcServer := rpc.NewKVStoreRPCServer(node)
 
-	// Create nodes and start them
 	var wg sync.WaitGroup
-	wg.Add(len(nodes))
-	for i := range nodes {
-		go nodes[i].Start(&wg)
-	}
-
+	wg.Add(2)
+	rpcServer.Start(port)
+	node.Start()
 	wg.Wait()
 }
 
-func runRPC(nodeID int, addresses []string) {
-	endpoints := make([]grpcnet.NodeEndpoint, len(addresses))
+func getNodePort(nodeID int, addresses []string) string {
+	var address string
 	for i, v := range addresses {
-		endpoints[i].NodeID = i
-		endpoints[i].Endpoint = v
+		if i == nodeID {
+			address = v
+		}
 	}
 
-	// Create undlying grpc based network
-	net, err := grpcnet.NewGRPCNetwork(nodeID, endpoints, logger)
+	parts := strings.SplitN(address, ":", 2)
+	if len(parts) < 2 {
+		panic("Cannot get port for current node")
+	}
+
+	port := parts[1]
+	_, err := strconv.Atoi(port)
 	if err != nil {
-		panic(err.Error())
+		panic("Invalid port. not a number")
 	}
 
-	// Start network
-	net.Start()
-
-	// Start current node
-	node := raft.CreateNode(nodeID, len(endpoints), net, logger)
-	node.Start(nil)
+	return port
 }
