@@ -13,10 +13,7 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 	n.tryFollowHigherTerm(req.LeaderID, req.Term, true)
 	if req.Term >= n.currentTerm {
 		// only process when term is the same or larger
-
-		// TODO[sidecus] - implement 5.3
-
-		success = true
+		success = n.logMgr.replicateLogs(req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.Entries)
 	}
 
 	return &AppendEntriesReply{
@@ -37,8 +34,27 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 		return
 	}
 
-	// TODO[sidecus] update leader indicies and resend new data as needed
-	// implement 5.3
+	// Different from the paper, we don't wait for AE call to finish
+	// so there is a chance that we are no longer the leader
+	// In that case no need to continue
+	if n.nodeState != Leader || n.currentTerm != reply.Term {
+		return
+	}
+
+	// 5.3 update leader indicies
+	follower := n.followerInfo[reply.NodeID]
+	// TODO[sidecus] we need to have the agreed match index in the reply
+	// it can potentially improve performance
+	if reply.Success {
+		follower.nextIndex = n.logMgr.lastIndex + 1
+		follower.matchIndex = n.logMgr.lastIndex
+	} else {
+		if follower.nextIndex > 0 {
+			follower.nextIndex--
+		}
+	}
+
+	n.tryReplicateLogs(follower)
 }
 
 // RequestVote handles raft RPC RV calls
@@ -56,6 +72,7 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	voteGranted := false
 	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
 		n.votedFor = req.CandidateID
+		// TODO[sidecus]: low pri, implement 5.2, 5.4
 		voteGranted = true
 
 		fmt.Printf("T%d: Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)

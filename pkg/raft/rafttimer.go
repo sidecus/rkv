@@ -7,9 +7,9 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const minElectionTimeoutMS = 2000
-const maxElectionTimeoutMS = 3000
-const heartbeatTimeoutMS = 1500
+const minElectionTimeoutMS = 20000
+const maxElectionTimeoutMS = 30000
+const heartbeatTimeoutMS = 15000
 const heartbeatTimeout = time.Duration(heartbeatTimeoutMS) * time.Millisecond
 
 // node state channel

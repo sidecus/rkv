@@ -56,7 +56,13 @@ func printUsage() {
 }
 
 func runRPC(nodeID int, addresses []string) {
-	port := getNodePort(nodeID, addresses)
+	// initialize arrays of all node ids
+	nodeIDs := make([]int, len(addresses))
+	for i := range nodeIDs {
+		nodeIDs[i] = i
+	}
+
+	// initialize peers
 	var peers []raft.PeerInfo
 	for i, v := range addresses {
 		if i == nodeID {
@@ -68,11 +74,15 @@ func runRPC(nodeID int, addresses []string) {
 			Endpoint: v,
 		})
 	}
+
+	// create needed components
 	kvStore := kvstore.NewKVStore()
 	proxy := rpc.NewKVStorePeerProxy(peers)
-	node := raft.NewNode(nodeID, len(addresses), kvStore, proxy)
+	node := raft.NewNode(nodeID, nodeIDs, kvStore, proxy)
 	rpcServer := rpc.NewKVStoreRPCServer(node)
 
+	// start rpc server
+	port := getNodePort(nodeID, addresses)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	rpcServer.Start(port)

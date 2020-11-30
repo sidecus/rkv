@@ -37,6 +37,12 @@ type INode interface {
 	Stop()
 }
 
+type followerInfo struct {
+	nodeID     int
+	nextIndex  int
+	matchIndex int
+}
+
 // node A raft node
 type node struct {
 	// node lock
@@ -54,15 +60,15 @@ type node struct {
 	proxy         IPeerProxy
 
 	// leader only
-	nextIndex  []int
-	matchIndex []int
+	followerInfo map[int]*followerInfo
 
 	// candidate only
 	votes map[int]bool
 }
 
 // NewNode creates a new node
-func NewNode(id int, size int, sm IStateMachine, proxy IPeerProxy) INode {
+func NewNode(id int, nodeIDs []int, sm IStateMachine, proxy IPeerProxy) INode {
+	size := len(nodeIDs)
 	n := &node{
 		mu:            sync.RWMutex{},
 		clusterSize:   size,
@@ -74,9 +80,15 @@ func NewNode(id int, size int, sm IStateMachine, proxy IPeerProxy) INode {
 		logMgr:        newLogMgr(),
 		stateMachine:  sm,
 		proxy:         proxy,
-		nextIndex:     make([]int, size),
-		matchIndex:    make([]int, size),
+		followerInfo:  make(map[int]*followerInfo, size-1),
 		votes:         make(map[int]bool, size),
+	}
+
+	// Initialize follower info array
+	for _, v := range nodeIDs {
+		if v != id {
+			n.followerInfo[v] = &followerInfo{nodeID: v, nextIndex: 0, matchIndex: -1}
+		}
 	}
 
 	return n
@@ -97,6 +109,7 @@ func (n *node) OnTimer() {
 
 // Start starts the node
 func (n *node) Start() {
+	n.enterFollowerState(n.nodeID, 0)
 	StartRaftTimer(n)
 	n.refreshTimer()
 }
@@ -109,6 +122,17 @@ func (n *node) Stop() {
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
 	RefreshRaftTimer(n.nodeState)
+}
+
+// enter follower state and follows new leader (or potential leader)
+func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
+	n.nodeState = Follower
+	n.currentTerm = newTerm
+	n.currentLeader = sourceNodeID
+
+	n.votedFor = -1
+
+	fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
 }
 
 // enter candidate state
@@ -130,23 +154,12 @@ func (n *node) enterLeaderState() {
 	n.nodeState = Leader
 	n.currentLeader = n.nodeID
 	// reset leader indicies
-	for i := 0; i < n.clusterSize; i++ {
-		n.nextIndex[i] = n.logMgr.lastIndex + 1
-		n.matchIndex[i] = n.logMgr.lastIndex
+	for _, v := range n.followerInfo {
+		v.nextIndex = n.logMgr.lastIndex + 1
+		v.matchIndex = 0
 	}
 
 	fmt.Printf("T%d: Node%d won election\n", n.currentTerm, n.nodeID)
-}
-
-// enter follower state and follows new leader (or potential leader)
-func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
-	n.nodeState = Follower
-	n.currentTerm = newTerm
-	n.currentLeader = sourceNodeID
-
-	n.votedFor = -1
-
-	fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
 }
 
 // start an election, caller should acquire write lock
@@ -182,7 +195,7 @@ func (n *node) sendHeartbeat() {
 	fmt.Printf("T%d: Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different go routines), response will be processed there
-	n.proxy.AppendEntries(req, func(reply *AppendEntriesReply) { n.handleAppendEntriesReply(reply) })
+	n.proxy.BroadcastAppendEntries(req, func(reply *AppendEntriesReply) { n.handleAppendEntriesReply(reply) })
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
@@ -203,4 +216,34 @@ func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSame
 	}
 
 	return ret
+}
+
+// tryReplicateLogs to follower as needed
+func (n *node) tryReplicateLogs(follower *followerInfo) {
+	if n.logMgr.lastIndex < follower.nextIndex {
+		return
+	}
+
+	// create RV request
+	nextIdx := follower.nextIndex
+	prevIdx := follower.nextIndex - 1
+	prevTerm := -1
+	if prevIdx >= 0 {
+		prevTerm = n.logMgr.logs[prevIdx].Term
+	}
+	req := &AppendEntriesRequest{
+		Term:         n.currentTerm,
+		LeaderID:     n.nodeID,
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		Entries:      n.logMgr.logs[nextIdx:],
+		LeaderCommit: n.logMgr.commitIndex,
+	}
+
+	n.proxy.AppendEntries(
+		follower.nodeID,
+		req,
+		func(reply *AppendEntriesReply) {
+			n.handleAppendEntriesReply(reply)
+		})
 }

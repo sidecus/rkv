@@ -37,7 +37,7 @@ func NewKVStorePeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
 		Peers: make(map[int]peerNode),
 	}
 
-	for i, peer := range peers {
+	for _, peer := range peers {
 		conn, err := grpc.Dial(peer.Endpoint, grpc.WithInsecure())
 		if err != nil {
 			// Our RPC connection is nonblocking so should not be expecting an error here
@@ -46,7 +46,7 @@ func NewKVStorePeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
 
 		client := pb.NewKVStoreRaftClient(conn)
 
-		proxy.Peers[i] = peerNode{
+		proxy.Peers[peer.NodeID] = peerNode{
 			info:   peer,
 			client: client,
 		}
@@ -55,8 +55,8 @@ func NewKVStorePeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
 	return &proxy
 }
 
-// AppendEntries handles raft RPC AE calls to all peers
-func (proxy *KVStorePeerProxy) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+// AppendEntries sends AE request to one single node
+func (proxy *KVStorePeerProxy) AppendEntries(nodeID int, req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
 	entries := make([]*pb.LogEntry, len(req.Entries))
 	for i, v := range req.Entries {
 		cmd := &pb.KVCmd{
@@ -85,18 +85,25 @@ func (proxy *KVStorePeerProxy) AppendEntries(req *raft.AppendEntriesRequest, cal
 		Entries:      entries,
 	}
 
+	// Send request to the peer node on different go routine
+	client := proxy.Peers[nodeID].client
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+		defer cancel()
+		resp, err := client.AppendEntries(ctx, ae)
+		if err == nil {
+			reply := raft.NewAppendEntriesReply(nodeID, int(resp.Term), int(resp.LeaderID), resp.Success)
+			callback(reply)
+		}
+	}()
+}
+
+// BroadcastAppendEntries handles raft RPC AE calls to all peers (heartbeat)
+func (proxy *KVStorePeerProxy) BroadcastAppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+	// send request to all peers
 	for _, peer := range proxy.Peers {
 		nodeID := peer.info.NodeID
-		client := peer.client
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-			defer cancel()
-			resp, err := client.AppendEntries(ctx, ae)
-			if err == nil {
-				reply := raft.NewAppendEntriesReply(nodeID, int(resp.Term), int(resp.LeaderID), resp.Success)
-				callback(reply)
-			}
-		}()
+		proxy.AppendEntries(nodeID, req, callback)
 	}
 }
 

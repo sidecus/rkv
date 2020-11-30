@@ -22,3 +22,11 @@ func ResetTimer(timer *time.Timer, d time.Duration) {
 	StopTimer(timer)
 	timer.Reset(d)
 }
+
+// Min returns a smaller integer out of two
+func Min(a, b int) int {
+	if a <= b {
+		return a
+	}
+	return b
+}

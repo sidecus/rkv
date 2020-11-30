@@ -8,8 +8,9 @@ type PeerInfo struct {
 
 // IPeerProxy is used for a node to talk to its peers
 type IPeerProxy interface {
-	// Raft related, these are boroadcasting so no node id required
-	AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
+	// Raft related, if no nodeid param it's boroadcasting
+	AppendEntries(nodeID int, req *AppendEntriesRequest, callback func(*AppendEntriesReply))
+	BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
 
 	// Data related, this need leader id
