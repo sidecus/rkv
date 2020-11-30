@@ -27,15 +27,15 @@ rkvclient.exe
 ### Start raft server nodes
 - Terminal#0
 ```PowerShell
-rkv.exe rpc -nodeid 0 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe -nodeid 0 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 - Terminal#1
 ```PowerShell
-rkv.exe rpc -nodeid 1 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe -nodeid 1 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 - Terminal#2
 ```PowerShell
-rkv.exe rpc -nodeid 2 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe -nodeid 2 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 ### Run client
 ```PowerShell
