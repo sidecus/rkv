@@ -94,8 +94,8 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 		return
 	}
 
-	if reply.VotedTerm != n.currentTerm {
-		// stale vote reply, ignore
+	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate {
+		// stale vote, ignore
 		return
 	}
 
@@ -120,58 +120,52 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 	}
 }
 
-// Get gets values from state machine
+// Get gets values from state machine, no need to proxy
 func (n *node) Get(req *GetRequest) (*GetReply, error) {
 	n.mu.RLock()
+	defer n.mu.RUnlock()
 
-	if n.nodeState == Leader {
-		ret, err := n.stateMachine.Get(req.Params...)
-		n.mu.RUnlock()
-		if err != nil {
-			return nil, err
-		}
+	ret, err := n.stateMachine.Get(req.Params...)
 
-		return &GetReply{Data: ret}, nil
+	if err != nil {
+		return nil, err
 	}
 
-	n.mu.RUnlock()
-
-	if n.currentLeader == -1 {
-		return nil, ErrorNoLeaderAvailable
-	}
-
-	// proxy to leader instead, no lock needed
-	// otherwise we might have a deadlock between this and the leader
-	return n.proxy.Get(n.currentLeader, req)
+	return &GetReply{NodeID: n.nodeID, Data: ret}, nil
 }
 
 // Execute runs a command via the raft node
-func (n *node) Execute(cmd *StateMachineCmd) (bool, error) {
+// If current node is the leader, it'll append the cmd to logs
+// If current node is not the leader, it'll proxy the request to leader node
+func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Lock()
 
+	leader := n.currentLeader
 	if n.nodeState == Leader {
-		cmds := []StateMachineCmd{*cmd}
-		n.logMgr.appendCmds(cmds, n.currentTerm)
+		n.logMgr.appendCmd(*cmd, n.currentTerm)
 
 		for _, follower := range n.followers {
 			n.replicateLogsIfAny(follower.nodeID)
 		}
 
 		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit
-		// For now we don't wait for commit in Execute
+		// For now we return eagerly and don't wait for commit in Execute
 		// Instead commit is done asynchronously after replication
 
 		n.mu.Unlock()
-		return true, nil
+		return &ExecuteReply{
+			NodeID:  n.nodeID,
+			Success: true,
+		}, nil
 	}
 
 	n.mu.Unlock()
 
-	if n.currentLeader == -1 {
-		return false, ErrorNoLeaderAvailable
+	if leader == -1 {
+		return nil, ErrorNoLeaderAvailable
 	}
 
 	// proxy to leader instead, no lock needed
 	// otherwise we might have a deadlock between this and the leader
-	return n.proxy.Execute(n.currentLeader, cmd)
+	return n.proxy.Execute(leader, cmd)
 }

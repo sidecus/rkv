@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/raft"
@@ -49,21 +50,23 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 	}
 
 	key := param[0].(string)
-	val, ok := store.getValue(key)
-	if !ok {
-		return nil, errors.New("key doesn't exist")
-	}
 
-	return val, nil
-}
-
-// getValue gets a value from store
-func (store *KVStore) getValue(key string) (val string, ok bool) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	val, ok = store.data[key]
-	return val, ok
+	return store.getValue(key)
+}
+
+// getValue gets a value from store
+func (store *KVStore) getValue(key string) (val string, err error) {
+	value, ok := store.data[key]
+	if !ok {
+		val = ""
+		err = fmt.Errorf("key %s doesn't exist", key)
+		return
+	}
+	val, err = value, nil
+	return
 }
 
 // apply applies a command to the store, parent should acquire lock

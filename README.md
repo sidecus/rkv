@@ -16,26 +16,26 @@ go build .\cmd\raftclient
 This builds two executables (.exe on Windows for example):
 - Raft KV store server:
 ```
-    .\cmd\raft\raft.exe
+rkv.exe
 ```
 - Raft KV store client:
 ```
-    .\cmd\raftclient\raftclient.exe
+rkvclient.exe
 ```
 
 ## Run
 ### Start raft server nodes
 - Terminal#0
 ```PowerShell
-raft.exe rpc -nodeid 0 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe rpc -nodeid 0 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 - Terminal#1
 ```PowerShell
-raft.exe rpc -nodeid 1 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe rpc -nodeid 1 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 - Terminal#2
 ```PowerShell
-raft.exe rpc -nodeid 2 -addresses localhost:27015,localhost:27016,localhost:27017
+rkv.exe rpc -nodeid 2 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
 ### Run client
 ```PowerShell
@@ -45,6 +45,7 @@ rpcclient.exe set -address localhost:27016 -key 0 -value v2
 rpcclient.exe get -address localhost:27016 -key 0
 rpcclient.exe get -address localhost:27017 -key 0
 ```
+Try to kill any server, run client query again.
 Watch the logs and enjoy.
 
 ## Happy coding. Peace.

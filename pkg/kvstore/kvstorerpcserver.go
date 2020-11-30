@@ -1,4 +1,4 @@
-package rpc
+package kvstore
 
 import (
 	"context"
@@ -8,31 +8,30 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/sidecus/raft/pkg/kvstore"
-	"github.com/sidecus/raft/pkg/kvstore/rpc/pb"
+	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
 )
 
-// KVStoreRPCServer is used to implement pb.KVStoreRPCServer
-type KVStoreRPCServer struct {
+// RPCServer is used to implement pb.KVStoreRPCServer
+type RPCServer struct {
 	wg     sync.WaitGroup
 	node   raft.INode
 	server *grpc.Server
 	pb.UnimplementedKVStoreRaftServer
 }
 
-// NewKVStoreRPCServer creates a new RPC server
-func NewKVStoreRPCServer(node raft.INode) KVStoreRPCServer {
-	return KVStoreRPCServer{
+// NewRPCServer creates a new RPC server
+func NewRPCServer(node raft.INode) RPCServer {
+	return RPCServer{
 		node: node,
 	}
 }
 
 // AppendEntries implements KVStoreRafterServer.AppendEntries
-func (s *KVStoreRPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesReply, error) {
+func (s *RPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesReply, error) {
 	entries := make([]raft.LogEntry, len(req.Entries))
 	for i, v := range req.Entries {
-		cmdData := kvstore.KVCmdData{
+		cmdData := KVCmdData{
 			Key:   v.Cmd.Data.Key,
 			Value: v.Cmd.Data.Value,
 		}
@@ -74,7 +73,7 @@ func (s *KVStoreRPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntr
 }
 
 // RequestVote requests a vote from the node
-func (s *KVStoreRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteReply, error) {
+func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteReply, error) {
 	rv := &raft.RequestVoteRequest{
 		Term:         int(req.Term),
 		CandidateID:  int(req.CandidateId),
@@ -95,14 +94,14 @@ func (s *KVStoreRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteR
 }
 
 // Set sets a value in the kv store
-func (s *KVStoreRPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetReply, error) {
-	cmdData := kvstore.KVCmdData{
+func (s *RPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetReply, error) {
+	cmdData := KVCmdData{
 		Key:   req.Key,
 		Value: req.Value,
 	}
 
 	cmd := raft.StateMachineCmd{
-		CmdType: kvstore.KVCmdSet,
+		CmdType: KVCmdSet,
 		Data:    cmdData,
 	}
 
@@ -113,18 +112,19 @@ func (s *KVStoreRPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.Set
 	}
 
 	return &pb.SetReply{
-		Success: resp,
+		NodeID:  int64(resp.NodeID),
+		Success: resp.Success,
 	}, nil
 }
 
 // Delete deletes a value from the kv store
-func (s *KVStoreRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteReply, error) {
-	cmdData := kvstore.KVCmdData{
+func (s *RPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteReply, error) {
+	cmdData := KVCmdData{
 		Key: req.Key,
 	}
 
 	cmd := &raft.StateMachineCmd{
-		CmdType: kvstore.KVCmdDel,
+		CmdType: KVCmdDel,
 		Data:    cmdData,
 	}
 
@@ -135,12 +135,13 @@ func (s *KVStoreRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*
 	}
 
 	return &pb.DeleteReply{
-		Success: resp,
+		NodeID:  int64(resp.NodeID),
+		Success: resp.Success,
 	}, nil
 }
 
 // Get implements pb.KVStoreRaftRPCServer.Get
-func (s *KVStoreRPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, error) {
+func (s *RPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, error) {
 	key := req.Key
 	gr := &raft.GetRequest{Params: []interface{}{key}}
 
@@ -151,13 +152,14 @@ func (s *KVStoreRPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.Get
 	}
 
 	return &pb.GetReply{
-		Value:   resp.Data.(string),
+		NodeID:  int64(resp.NodeID),
 		Success: true,
+		Value:   resp.Data.(string),
 	}, nil
 }
 
 // Start starts the grpc server on a different go routine
-func (s *KVStoreRPCServer) Start(port string) {
+func (s *RPCServer) Start(port string) {
 	s.wg.Add(1)
 	go func() {
 		var opts []grpc.ServerOption
@@ -175,7 +177,7 @@ func (s *KVStoreRPCServer) Start(port string) {
 }
 
 // Stop stops the rpc server
-func (s *KVStoreRPCServer) Stop() {
+func (s *RPCServer) Stop() {
 	s.server.Stop()
 	s.wg.Wait()
 }

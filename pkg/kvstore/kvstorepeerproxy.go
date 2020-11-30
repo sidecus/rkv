@@ -1,12 +1,11 @@
-package rpc
+package kvstore
 
 import (
 	"context"
 	"errors"
 	"time"
 
-	"github.com/sidecus/raft/pkg/kvstore"
-	"github.com/sidecus/raft/pkg/kvstore/rpc/pb"
+	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
 	"google.golang.org/grpc"
 )
@@ -22,18 +21,18 @@ type peerNode struct {
 	client pb.KVStoreRaftClient
 }
 
-// KVStorePeerProxy manages RPC connection to peer nodes
-type KVStorePeerProxy struct {
+// PeerProxy manages RPC connection to peer nodes
+type PeerProxy struct {
 	Peers map[int]peerNode
 }
 
-// NewKVStorePeerProxy creates the node proxy for kv store
-func NewKVStorePeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
+// NewPeerProxy creates the node proxy for kv store
+func NewPeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
 	if len(peers) == 0 {
 		panic(errorNoPeersProvided)
 	}
 
-	proxy := KVStorePeerProxy{
+	proxy := PeerProxy{
 		Peers: make(map[int]peerNode),
 	}
 
@@ -56,14 +55,14 @@ func NewKVStorePeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVStorePeerProxy) AppendEntries(nodeID int, req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+func (proxy *PeerProxy) AppendEntries(nodeID int, req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
 	entries := make([]*pb.LogEntry, len(req.Entries))
 	for i, v := range req.Entries {
 		cmd := &pb.KVCmd{
 			CmdType: int32(v.Cmd.CmdType),
 			Data: &pb.KVCmdData{
-				Key:   v.Cmd.Data.(kvstore.KVCmdData).Key,
-				Value: v.Cmd.Data.(kvstore.KVCmdData).Value,
+				Key:   v.Cmd.Data.(KVCmdData).Key,
+				Value: v.Cmd.Data.(KVCmdData).Value,
 			},
 		}
 		entry := &pb.LogEntry{
@@ -105,7 +104,7 @@ func (proxy *KVStorePeerProxy) AppendEntries(nodeID int, req *raft.AppendEntries
 }
 
 // BroadcastAppendEntries handles raft RPC AE calls to all peers (heartbeat)
-func (proxy *KVStorePeerProxy) BroadcastAppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+func (proxy *PeerProxy) BroadcastAppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
 	// send request to all peers
 	for _, peer := range proxy.Peers {
 		nodeID := peer.info.NodeID
@@ -114,7 +113,7 @@ func (proxy *KVStorePeerProxy) BroadcastAppendEntries(req *raft.AppendEntriesReq
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVStorePeerProxy) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
+func (proxy *PeerProxy) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
 	rv := &pb.RequestVoteRequest{
 		Term:         int64(req.Term),
 		CandidateId:  int64(req.CandidateID),
@@ -143,7 +142,7 @@ func (proxy *KVStorePeerProxy) RequestVote(req *raft.RequestVoteRequest, callbac
 }
 
 // Get gets values from state machine against leader
-func (proxy *KVStorePeerProxy) Get(nodeID int, req *raft.GetRequest) (*raft.GetReply, error) {
+func (proxy *PeerProxy) Get(nodeID int, req *raft.GetRequest) (*raft.GetReply, error) {
 	peer, ok := proxy.Peers[nodeID]
 	if !ok {
 		return nil, errorInvalidNodeID
@@ -170,34 +169,38 @@ func (proxy *KVStorePeerProxy) Get(nodeID int, req *raft.GetRequest) (*raft.GetR
 }
 
 // Execute runs a command via the leader
-func (proxy *KVStorePeerProxy) Execute(nodeID int, cmd *raft.StateMachineCmd) (bool, error) {
+func (proxy *PeerProxy) Execute(nodeID int, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 	peer, ok := proxy.Peers[nodeID]
 	if !ok {
-		return false, errorInvalidNodeID
+		return nil, errorInvalidNodeID
 	}
 
-	ret := false
+	respNodeID := -1
+	success := false
 	err := error(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
-	if cmd.CmdType == kvstore.KVCmdSet {
+	if cmd.CmdType == KVCmdSet {
 		req := &pb.SetRequest{
-			Key:   cmd.Data.(kvstore.KVCmdData).Key,
-			Value: cmd.Data.(kvstore.KVCmdData).Value,
+			Key:   cmd.Data.(KVCmdData).Key,
+			Value: cmd.Data.(KVCmdData).Value,
 		}
 		resp, errSet := peer.client.Set(ctx, req)
-		ret, err = resp.Success, errSet
+		respNodeID, success, err = int(resp.NodeID), resp.Success, errSet
 	} else {
 		req := &pb.DeleteRequest{
-			Key: cmd.Data.(kvstore.KVCmdData).Key,
+			Key: cmd.Data.(KVCmdData).Key,
 		}
-		resp, errSet := peer.client.Delete(ctx, req)
-		ret, err = resp.Success, errSet
+		resp, errDel := peer.client.Delete(ctx, req)
+		respNodeID, success, err = int(resp.NodeID), resp.Success, errDel
 	}
 
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return ret, err
+	return &raft.ExecuteReply{
+		NodeID:  respNodeID,
+		Success: success,
+	}, err
 }

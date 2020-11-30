@@ -40,16 +40,14 @@ func newLogMgr(sm IStateMachine) *logManager {
 
 // append appends a set of cmds for the given term to the logs
 // this should be called by leader when accepting client requests
-func (lm *logManager) appendCmds(cmds []StateMachineCmd, term int) {
-	entries := make([]LogEntry, len(cmds))
-	for i := range entries {
-		entries[i] = LogEntry{
-			Index:     lm.lastIndex + 1 + i,
-			Cmd:       cmds[i],
-			Term:      term,
-			Committed: false,
-		}
+func (lm *logManager) appendCmd(cmd StateMachineCmd, term int) {
+	entry := LogEntry{
+		Index:     lm.lastIndex + 1,
+		Cmd:       cmd,
+		Term:      term,
+		Committed: false,
 	}
+	entries := []LogEntry{entry}
 	lm.appendEntries(entries)
 }
 

@@ -6,5 +6,5 @@ import (
 
 func TestRaftTimer(t *testing.T) {
 	// stop
-	RefreshRaftTimer(NodeState(-1))
+	refreshRaftTimer(NodeState(-1))
 }

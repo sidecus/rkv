@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-option go_package = "github.com/sidecus/raft/pkg/kvstore/rpc/pb";
+option go_package = "github.com/sidecus/raft/pkg/kvstore/pb";
 option java_multiple_files = true;
-option java_package = "com.github.sidecus.raft.pkg.kvstore.rpc";
+option java_package = "com.github.sidecus.raft.pkg.kvstore";
 option java_outer_classname = "KvStoreRafter";
 
 package pb;
@@ -28,7 +28,7 @@ message KVCmdData {
 }
 
 message KVCmd {
-  int32 CmdType = 1;
+  int32 cmdType = 1;
   KVCmdData Data = 2;
 }
 
@@ -79,7 +79,8 @@ message SetRequest {
 
 // SetRequest is the reply message for kvstore set operation
 message SetReply {
-  bool success = 1;
+  int64 nodeID = 1;
+  bool success = 2;
 }
 
 // DeleteRequest is the message used to delete a value from kvstore
@@ -89,7 +90,8 @@ message DeleteRequest {
 
 // DeleteReply is the reply message for kvstore delete operation
 message DeleteReply {
-  bool success = 1;
+  int64 nodeID = 1;
+  bool success = 2;
 }
 
 // GetRequest is the message used to get a value from kvstore
@@ -99,7 +101,8 @@ message GetRequest {
 
 // GetReply is the reply message for kvstore get operation
 message GetReply {
-  bool success = 1;
-  string value = 2;
+  int64 nodeID = 1;
+  bool success = 2;
+  string value = 3;
 }
 

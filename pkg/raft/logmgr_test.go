@@ -17,7 +17,7 @@ func (sm *dummyStateMachine) Get(param ...interface{}) (result interface{}, err 
 
 func TestAppend(t *testing.T) {
 	lm := newLogMgr(&dummyStateMachine{})
-	cmds := make([]StateMachineCmd, 10)
+	cmd := StateMachineCmd{}
 	if lm.lastIndex != -1 {
 		t.Error("LastIndex is not -1 upon init")
 	}
@@ -30,39 +30,39 @@ func TestAppend(t *testing.T) {
 		t.Error("LastApplied is not -1 upon init")
 	}
 
-	lm.appendCmds(cmds, 3)
-	if lm.lastIndex != len(cmds)-1 {
+	lm.appendCmd(cmd, 3)
+	lm.appendCmd(cmd, 3)
+	lm.appendCmd(cmd, 3)
+	if lm.lastIndex != 2 {
 		t.Error("LastIndex is incorrect")
 	}
-	if len(lm.logs) != len(cmds) {
+	if len(lm.logs) != 3 {
 		t.Error("append failed")
 	}
 	for i, v := range lm.logs {
 		if v.Index != i {
-			t.Error("appended log entry doesn't have correct index")
-			t.FailNow()
+			t.Fatal("appended log entry doesn't have correct index")
 		}
 		if v.Term != 3 {
-			t.Error("appended log entry doesn't have correct term")
-			t.FailNow()
+			t.Fatal("appended log entry doesn't have correct term")
 		}
 	}
 
-	start := len(cmds)
-	lm.appendCmds(cmds, 4)
-	if lm.lastIndex != start+len(cmds)-1 {
+	start := lm.lastIndex
+	end := start + 20
+	for i := start; i < end; i++ {
+		lm.appendCmd(cmd, 4)
+	}
+	if lm.lastIndex != end {
 		t.Error("LastIndex is incorrect")
 	}
-	end := len(cmds)
-	newlogs := lm.logs[start:end]
+	newlogs := lm.logs[start+1 : end+1]
 	for i, v := range newlogs {
-		if v.Index != start+i {
-			t.Error("appended log entry doesn't have correct index")
-			t.FailNow()
+		if v.Index != start+1+i {
+			t.Fatal("appended log entry doesn't have correct index")
 		}
 		if v.Term != 4 {
-			t.Error("appended log entry doesn't have correct term")
-			t.FailNow()
+			t.Fatal("appended log entry doesn't have correct term")
 		}
 	}
 }

@@ -52,7 +52,7 @@ func TestCmdDel(t *testing.T) {
 		},
 	})
 
-	if _, ok := store.getValue("a"); ok {
+	if _, err := store.Get("a"); err == nil {
 		t.Error("Del doesn't delete value correctly")
 	}
 
@@ -71,7 +71,7 @@ func TestCmdDel(t *testing.T) {
 		},
 	})
 
-	if v, ok := store.getValue("a"); !ok || v != "a" {
+	if v, err := store.Get("a"); err != nil || v.(string) != "a" {
 		t.Error("Del deletes wrong entry")
 	}
 }

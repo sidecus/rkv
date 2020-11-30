@@ -23,14 +23,12 @@ func getElectionTimeout() time.Duration {
 
 // election timer starts an election timer
 func raftTimer(node INode) {
-	// Create a timer (stopped right away)
-	timer := time.NewTimer(time.Hour)
-	util.StopTimer(timer)
-	currentState := NodeState(Candidate)
+	// Create a timer
+	timer := time.NewTimer(getElectionTimeout())
 
 	for {
 		select {
-		case currentState = <-state:
+		case currentState := <-state:
 			if currentState == Follower || currentState == Candidate {
 				// reset timer on follower/candidate state with random election timeout
 				util.ResetTimer(timer, getElectionTimeout())
@@ -48,17 +46,17 @@ func raftTimer(node INode) {
 	}
 }
 
-// RefreshRaftTimer notifies the timer to refresh based on new state
-func RefreshRaftTimer(newState NodeState) {
+// refreshRaftTimer notifies the timer to refresh based on new state
+func refreshRaftTimer(newState NodeState) {
 	state <- newState
 }
 
-// StartRaftTimer starts the raft timer goroutine
-func StartRaftTimer(node INode) {
+// startRaftTimer starts the raft timer goroutine
+func startRaftTimer(node INode) {
 	go raftTimer(node)
 }
 
-// StopRaftTimer stops the raft timer goroutine
-func StopRaftTimer() {
+// stopRaftTimer stops the raft timer goroutine
+func stopRaftTimer() {
 	state <- -1
 }

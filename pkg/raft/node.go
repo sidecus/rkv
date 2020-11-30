@@ -67,19 +67,22 @@ func (n *node) OnTimer() {
 
 // Start starts the node
 func (n *node) Start() {
+	n.mu.Lock()
+	n.mu.Unlock()
+
+	writeInfo("Node%d starting...", n.nodeID)
 	n.enterFollowerState(n.nodeID, 0)
-	StartRaftTimer(n)
-	n.refreshTimer()
+	startRaftTimer(n)
 }
 
 func (n *node) Stop() {
 	// We don't wait for the goroutine to finish, just no need
-	StopRaftTimer()
+	stopRaftTimer()
 }
 
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
-	RefreshRaftTimer(n.nodeState)
+	refreshRaftTimer(n.nodeState)
 }
 
 // enter follower state and follows new leader (or potential leader)
@@ -91,7 +94,7 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	n.votedFor = -1
 
 	if n.nodeID != sourceNodeID {
-		writeInfo("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
+		writeInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
 	}
 }
 

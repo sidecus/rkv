@@ -33,7 +33,7 @@ type INode interface {
 
 	// Data related
 	Get(*GetRequest) (*GetReply, error)
-	Execute(*StateMachineCmd) (bool, error)
+	Execute(*StateMachineCmd) (*ExecuteReply, error)
 
 	// Lifecycle
 	Start()
@@ -55,7 +55,7 @@ type IPeerProxy interface {
 
 	// Data related, this need leader id
 	Get(nodeID int, req *GetRequest) (*GetReply, error)
-	Execute(nodeID int, cmd *StateMachineCmd) (bool, error)
+	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
 }
 
 // AppendEntriesRequest event payload type for AE calls
@@ -99,5 +99,12 @@ type GetRequest struct {
 
 // GetReply is used to reply to GetRequest
 type GetReply struct {
-	Data interface{}
+	NodeID int
+	Data   interface{}
+}
+
+// ExecuteReply is used to reply to Execute
+type ExecuteReply struct {
+	NodeID  int
+	Success bool
 }
