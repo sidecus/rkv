@@ -1,7 +1,5 @@
 package raft
 
-import "fmt"
-
 // This file implements node methods related to raft RPC calls
 
 // AppendEntries handles raft RPC AE calls
@@ -9,11 +7,13 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	success := false
 	n.tryFollowHigherTerm(req.LeaderID, req.Term, true)
+
+	success := false
 	if req.Term >= n.currentTerm {
 		// only process logs when term is the same or larger
-		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.Entries)
+		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		n.commitTo(req.LeaderCommit)
 	}
 
 	return &AppendEntriesReply{
@@ -42,13 +42,16 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	}
 
 	// 5.3 update leader indicies
-	// TODO[sidecus] we need to have the agreed match index in the reply
-	// it can potentially improve performance
+	// TODO[sidecus]: low pri, we might want to include the match index in the AE reply
+	// using n.logMgr.lastIndex is not safe here since we are asynchronous unlike the paper
 	nodeID := reply.NodeID
 	n.followers.update(nodeID, reply.Success, n.logMgr.lastIndex)
 
+	// Check whether there are logs to commit
+	n.commitIfAny()
+
 	// replicate more logs if needed
-	n.replicateIfAny(nodeID)
+	n.replicateLogsIfAny(nodeID)
 }
 
 // RequestVote handles raft RPC RV calls
@@ -65,11 +68,12 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	n.tryFollowHigherTerm(req.CandidateID, req.Term, false)
 	voteGranted := false
 	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
-		n.votedFor = req.CandidateID
-		// TODO[sidecus]: low pri, implement 5.2, 5.4
-		voteGranted = true
-
-		fmt.Printf("T%d: Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
+		// 5.2&5.4 - vote only when candidate's log is at least up to date with current node
+		if req.LastLogIndex >= n.logMgr.lastIndex && req.LastLogTerm >= n.logMgr.lastTerm {
+			n.votedFor = req.CandidateID
+			voteGranted = true
+			writeInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
+		}
 	}
 
 	return &RequestVoteReply{
@@ -92,6 +96,11 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 
 	if reply.VotedTerm != n.currentTerm {
 		// stale vote reply, ignore
+		return
+	}
+
+	if !reply.VoteGranted {
+		// vote denied, ignore
 		return
 	}
 
@@ -144,8 +153,13 @@ func (n *node) Execute(cmd *StateMachineCmd) (bool, error) {
 		cmds := []StateMachineCmd{*cmd}
 		n.logMgr.appendCmds(cmds, n.currentTerm)
 
-		// TODO[sidecus] - broad cast to followers and wait for response before committing
-		n.logMgr.commit(n.logMgr.lastIndex)
+		for _, follower := range n.followers {
+			n.replicateLogsIfAny(follower.nodeID)
+		}
+
+		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit
+		// For now we don't wait for commit in Execute
+		// Instead commit is done asynchronously after replication
 
 		n.mu.Unlock()
 		return true, nil

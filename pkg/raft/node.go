@@ -2,40 +2,11 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	"sync"
-)
-
-// NodeState is the state of the node
-type NodeState int
-
-const (
-	//Follower state
-	Follower = 1
-	// Candidate state
-	Candidate = 2
-	// Leader state
-	Leader = 3
 )
 
 // ErrorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
 var ErrorNoLeaderAvailable = errors.New("No leader currently available")
-
-// INode represents one raft node
-type INode interface {
-	// Raft
-	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
-	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
-	OnTimer()
-
-	// Data related
-	Get(*GetRequest) (*GetReply, error)
-	Execute(*StateMachineCmd) (bool, error)
-
-	// Lifecycle
-	Start()
-	Stop()
-}
 
 // node A raft node
 type node struct {
@@ -54,7 +25,7 @@ type node struct {
 	proxy         IPeerProxy
 
 	// leader only
-	followers *followerInfo
+	followers followerInfo
 
 	// candidate only
 	votes map[int]bool
@@ -120,7 +91,7 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	n.votedFor = -1
 
 	if n.nodeID != sourceNodeID {
-		fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
+		writeInfo("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
 	}
 }
 
@@ -135,7 +106,7 @@ func (n *node) enterCandidateState() {
 	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
 
-	fmt.Printf("T%d: Node%d starts election\n", n.currentTerm, n.nodeID)
+	writeTrace("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
@@ -145,7 +116,7 @@ func (n *node) enterLeaderState() {
 	// reset leader indicies
 	n.followers.reset(n.logMgr.lastIndex)
 
-	fmt.Printf("T%d: Node%d won election\n", n.currentTerm, n.nodeID)
+	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
 // start an election, caller should acquire write lock
@@ -170,7 +141,7 @@ func (n *node) startElection() {
 func (n *node) sendHeartbeat() {
 	// create empty AE request
 	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, n.logMgr.lastIndex+1)
-	fmt.Printf("T%d: Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
+	writeTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different go routines), response will be processed there
 	n.proxy.BroadcastAppendEntries(
@@ -200,17 +171,21 @@ func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSame
 	return ret
 }
 
-// replicateIfAny replicate logs to follower as needed
-func (n *node) replicateIfAny(targetNodeID int) {
-	follower := n.followers.getFollower(targetNodeID)
+// replicateLogsIfAny replicate logs to follower as needed
+// This should be only be called by leader
+func (n *node) replicateLogsIfAny(targetNodeID int) {
+	follower := n.followers[targetNodeID]
 
-	if n.logMgr.lastIndex < follower.nextIndex {
+	if follower.nextIndex > n.logMgr.lastIndex {
+		// nothing to replicate
 		return
 	}
 
 	// there are logs to replicate, create AE request and send
 	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, follower.nextIndex)
-	fmt.Printf("T%d: Node%d replicating logs to Node%d\n", n.currentTerm, n.nodeID, targetNodeID)
+	minIdx := req.Entries[0].Index
+	maxIdx := req.Entries[len(req.Entries)-1].Index
+	writeInfo("T%d: Node%d replicating logs to Node%d (log%d-log%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
 	n.proxy.AppendEntries(
 		follower.nodeID,
@@ -218,4 +193,28 @@ func (n *node) replicateIfAny(targetNodeID int) {
 		func(reply *AppendEntriesReply) {
 			n.handleAppendEntriesReply(reply)
 		})
+}
+
+// commitIfAny commits logs as needed by checking each follower's match index
+// This should only be called by leader
+func (n *node) commitIfAny() {
+	commitIndex := n.logMgr.commitIndex
+	for i := n.logMgr.lastIndex; i > n.logMgr.commitIndex; i-- {
+		if n.logMgr.logs[i].Term != n.currentTerm {
+			continue
+		}
+
+		if n.followers.majorityMatch(i) {
+			commitIndex = i
+		}
+	}
+
+	n.commitTo(commitIndex)
+}
+
+// Called by both leader (upon AE reply) or follower (upon AE request)
+func (n *node) commitTo(commitIndex int) {
+	if commitIndex >= 0 && n.logMgr.commit(commitIndex) {
+		writeInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, commitIndex)
+	}
 }

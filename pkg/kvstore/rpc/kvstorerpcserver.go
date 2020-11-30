@@ -2,7 +2,7 @@ package rpc
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"net"
 	"sync"
 
@@ -166,7 +166,7 @@ func (s *KVStoreRPCServer) Start(port string) {
 
 		lis, err := net.Listen("tcp", ":"+port)
 		if err != nil {
-			panic(fmt.Sprintf("Cannot listen on port %s. Error:%s", port, err.Error()))
+			log.Fatalf("Cannot listen on port %s. Error:%s", port, err.Error())
 		}
 
 		s.server.Serve(lis)

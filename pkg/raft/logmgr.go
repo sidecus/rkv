@@ -1,8 +1,6 @@
 package raft
 
-import (
-	"github.com/sidecus/raft/pkg/util"
-)
+import "github.com/sidecus/raft/pkg/util"
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -56,7 +54,7 @@ func (lm *logManager) appendCmds(cmds []StateMachineCmd, term int) {
 }
 
 // appendLogs handles replicated logs from leader
-func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm, leaderCommit int, entries []LogEntry) bool {
+func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) bool {
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
 	if !lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm) {
@@ -77,19 +75,15 @@ func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm, leaderCommit int, en
 		lm.appendEntries(entries)
 	}
 
-	// commit as appropriate
-	lm.commit(util.Min(leaderCommit, lm.lastIndex))
-
 	return true
 }
 
-func (lm *logManager) commit(index int) {
-	if index > lm.lastIndex {
-		panic("invalid index to commit")
-	}
+func (lm *logManager) commit(index int) bool {
+	// cap to lastIndex
+	index = util.Min(index, lm.lastIndex)
 
 	if index <= lm.commitIndex {
-		return // nothing to commit
+		return false // nothing to commit
 	}
 
 	// Update log entries and set new commit index
@@ -105,6 +99,8 @@ func (lm *logManager) commit(index int) {
 		}
 		lm.lastApplied = lm.commitIndex
 	}
+
+	return true
 }
 
 // createAERequest creates an AppendEntriesRequest with proper log payload
