@@ -12,8 +12,8 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 	success := false
 	n.tryFollowHigherTerm(req.LeaderID, req.Term, true)
 	if req.Term >= n.currentTerm {
-		// only process when term is the same or larger
-		success = n.logMgr.replicateLogs(req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.Entries)
+		// only process logs when term is the same or larger
+		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.Entries)
 	}
 
 	return &AppendEntriesReply{
@@ -42,19 +42,13 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	}
 
 	// 5.3 update leader indicies
-	follower := n.followerInfo[reply.NodeID]
 	// TODO[sidecus] we need to have the agreed match index in the reply
 	// it can potentially improve performance
-	if reply.Success {
-		follower.nextIndex = n.logMgr.lastIndex + 1
-		follower.matchIndex = n.logMgr.lastIndex
-	} else {
-		if follower.nextIndex > 0 {
-			follower.nextIndex--
-		}
-	}
+	nodeID := reply.NodeID
+	n.followers.update(nodeID, reply.Success, n.logMgr.lastIndex)
 
-	n.tryReplicateLogs(follower)
+	// replicate more logs if needed
+	n.replicateIfAny(nodeID)
 }
 
 // RequestVote handles raft RPC RV calls
@@ -149,9 +143,11 @@ func (n *node) Execute(cmd *StateMachineCmd) (bool, error) {
 	if n.nodeState == Leader {
 		cmds := []StateMachineCmd{*cmd}
 		n.logMgr.appendCmds(cmds, n.currentTerm)
-		n.stateMachine.Apply(*cmd)
+
+		// TODO[sidecus] - broad cast to followers and wait for response before committing
+		n.logMgr.commit(n.logMgr.lastIndex)
+
 		n.mu.Unlock()
-		// TODO[sidecus] - broad cast to followers and wait for response
 		return true, nil
 	}
 

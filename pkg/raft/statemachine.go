@@ -9,7 +9,5 @@ type StateMachineCmd struct {
 // IStateMachine holds the interface to a statemachine
 type IStateMachine interface {
 	Apply(cmd StateMachineCmd)
-	Init(cmds []StateMachineCmd)
-
 	Get(param ...interface{}) (result interface{}, err error)
 }

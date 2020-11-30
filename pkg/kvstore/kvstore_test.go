@@ -17,7 +17,7 @@ func TestCmdSet(t *testing.T) {
 		},
 	})
 
-	if v, _ := store.GetValue("a"); v != "a" {
+	if v, _ := store.getValue("a"); v != "a" {
 		t.Error("Set doesn't set value correctly")
 	}
 
@@ -29,7 +29,7 @@ func TestCmdSet(t *testing.T) {
 		},
 	})
 
-	if v, _ := store.GetValue("a"); v != "A" {
+	if v, _ := store.getValue("a"); v != "A" {
 		t.Error("Set doesn't set value correctly upon existing entry")
 	}
 }
@@ -52,7 +52,7 @@ func TestCmdDel(t *testing.T) {
 		},
 	})
 
-	if _, ok := store.GetValue("a"); ok {
+	if _, ok := store.getValue("a"); ok {
 		t.Error("Del doesn't delete value correctly")
 	}
 
@@ -71,7 +71,7 @@ func TestCmdDel(t *testing.T) {
 		},
 	})
 
-	if v, ok := store.GetValue("a"); !ok || v != "a" {
+	if v, ok := store.getValue("a"); !ok || v != "a" {
 		t.Error("Del deletes wrong entry")
 	}
 }

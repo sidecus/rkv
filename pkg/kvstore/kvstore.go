@@ -42,26 +42,6 @@ func (store *KVStore) Apply(cmd raft.StateMachineCmd) {
 	store.apply(cmd)
 }
 
-// Init clears the map and then applies all the given cmds with concurrency safety
-func (store *KVStore) Init(cmds []raft.StateMachineCmd) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	store.data = make(map[string]string)
-	for _, c := range cmds {
-		store.apply(c)
-	}
-}
-
-// GetValue a value from store
-func (store *KVStore) GetValue(key string) (val string, ok bool) {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-
-	val, ok = store.data[key]
-	return val, ok
-}
-
 // Get Implements IStateMachine.Get
 func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) {
 	if len(param) != 1 {
@@ -69,7 +49,7 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 	}
 
 	key := param[0].(string)
-	val, ok := store.GetValue(key)
+	val, ok := store.getValue(key)
 	if !ok {
 		return nil, errors.New("key doesn't exist")
 	}
@@ -77,7 +57,16 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 	return val, nil
 }
 
-// apply applies a command to the store, with no lock
+// getValue gets a value from store
+func (store *KVStore) getValue(key string) (val string, ok bool) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	val, ok = store.data[key]
+	return val, ok
+}
+
+// apply applies a command to the store, parent should acquire lock
 func (store *KVStore) apply(cmd raft.StateMachineCmd) {
 	data := cmd.Data.(KVCmdData)
 	if cmd.CmdType == KVCmdSet {

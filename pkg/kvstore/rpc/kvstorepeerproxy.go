@@ -92,7 +92,13 @@ func (proxy *KVStorePeerProxy) AppendEntries(nodeID int, req *raft.AppendEntries
 		defer cancel()
 		resp, err := client.AppendEntries(ctx, ae)
 		if err == nil {
-			reply := raft.NewAppendEntriesReply(nodeID, int(resp.Term), int(resp.LeaderID), resp.Success)
+			reply := &raft.AppendEntriesReply{
+				NodeID:   nodeID,
+				LeaderID: int(resp.LeaderID),
+				Term:     int(resp.Term),
+				Success:  resp.Success,
+			}
+
 			callback(reply)
 		}
 	}()
@@ -124,7 +130,12 @@ func (proxy *KVStorePeerProxy) RequestVote(req *raft.RequestVoteRequest, callbac
 			defer cancel()
 			resp, err := client.RequestVote(ctx, rv)
 			if err == nil {
-				reply := raft.NewRequestVoteReply(nodeID, int(resp.Term), int(resp.VotedTerm), resp.VoteGranted)
+				reply := &raft.RequestVoteReply{
+					NodeID:      nodeID,
+					Term:        int(resp.Term),
+					VotedTerm:   int(resp.VotedTerm),
+					VoteGranted: resp.VoteGranted,
+				}
 				callback(reply)
 			}
 		}()
@@ -153,8 +164,9 @@ func (proxy *KVStorePeerProxy) Get(nodeID int, req *raft.GetRequest) (*raft.GetR
 		return nil, err
 	}
 
-	ret := raft.NewGetReply(resp.Value)
-	return ret, nil
+	return &raft.GetReply{
+		Data: resp.Value,
+	}, nil
 }
 
 // Execute runs a command via the leader

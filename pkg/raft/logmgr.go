@@ -21,16 +21,20 @@ type logManager struct {
 
 	// logs should be read from persistent storage upon init
 	logs []LogEntry
+
+	// reference to statemachien for commit operations
+	statemachine IStateMachine
 }
 
 // newLogMgr creates a new logmgr
-func newLogMgr() *logManager {
+func newLogMgr(sm IStateMachine) *logManager {
 	lm := &logManager{
-		commitIndex: -1,
-		lastIndex:   -1,
-		lastTerm:    -1,
-		lastApplied: -1,
-		logs:        make([]LogEntry, 0),
+		commitIndex:  -1,
+		lastIndex:    -1,
+		lastTerm:     -1,
+		lastApplied:  -1,
+		logs:         make([]LogEntry, 0),
+		statemachine: sm,
 	}
 
 	return lm
@@ -51,9 +55,9 @@ func (lm *logManager) appendCmds(cmds []StateMachineCmd, term int) {
 	lm.appendEntries(entries)
 }
 
-// replicateLogs handles replicated logs from leader
-func (lm *logManager) replicateLogs(prevLogIndex, prevLogTerm, leaderCommit int, entries []LogEntry) bool {
-	lm.validateReplicatedLogs(prevLogIndex, prevLogTerm, entries)
+// appendLogs handles replicated logs from leader
+func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm, leaderCommit int, entries []LogEntry) bool {
+	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
 	if !lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm) {
 		return false
@@ -73,12 +77,59 @@ func (lm *logManager) replicateLogs(prevLogIndex, prevLogTerm, leaderCommit int,
 		lm.appendEntries(entries)
 	}
 
-	// Update commit index as appropriate
-	if leaderCommit > lm.commitIndex {
-		lm.commitIndex = util.Min(leaderCommit, lm.lastIndex)
-	}
+	// commit as appropriate
+	lm.commit(util.Min(leaderCommit, lm.lastIndex))
 
 	return true
+}
+
+func (lm *logManager) commit(index int) {
+	if index > lm.lastIndex {
+		panic("invalid index to commit")
+	}
+
+	if index <= lm.commitIndex {
+		return // nothing to commit
+	}
+
+	// Update log entries and set new commit index
+	for i := lm.commitIndex + 1; i <= index; i++ {
+		lm.logs[i].Committed = true
+	}
+	lm.commitIndex = index
+
+	// Apply commands to state machine if needed
+	if lm.commitIndex > lm.lastApplied {
+		for i := lm.lastApplied + 1; i <= lm.commitIndex; i++ {
+			lm.statemachine.Apply(lm.logs[i].Cmd)
+		}
+		lm.lastApplied = lm.commitIndex
+	}
+}
+
+// createAERequest creates an AppendEntriesRequest with proper log payload
+func (lm *logManager) createAERequest(term, leaderID, nextIdx int) *AppendEntriesRequest {
+	if nextIdx < 0 || nextIdx > lm.lastIndex+1 {
+		panic("nextIdx shall never be less than zero or larger than lastLogIndex+1")
+	}
+
+	prevIdx := nextIdx - 1
+
+	prevTerm := -1
+	if prevIdx >= 0 {
+		prevTerm = lm.logs[prevIdx].Term
+	}
+
+	req := &AppendEntriesRequest{
+		Term:         term,
+		LeaderID:     leaderID,
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		Entries:      lm.logs[nextIdx:],
+		LeaderCommit: lm.commitIndex,
+	}
+
+	return req
 }
 
 // check to see whether we have a matching entry @prevLogIndex with prevLogTerm
@@ -96,7 +147,7 @@ func (lm *logManager) hasMatchingPrevEntry(prevLogIndex, prevLogTerm int) bool {
 }
 
 // validates incoming logs, panicing on bad data
-func (lm *logManager) validateReplicatedLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) {
+func (lm *logManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries []LogEntry) {
 	if prevLogIndex < 0 && prevLogIndex != -1 {
 		panic("invalid prevLogIndex, less than 0 but not -1")
 	}

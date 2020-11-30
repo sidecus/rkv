@@ -37,12 +37,6 @@ type INode interface {
 	Stop()
 }
 
-type followerInfo struct {
-	nodeID     int
-	nextIndex  int
-	matchIndex int
-}
-
 // node A raft node
 type node struct {
 	// node lock
@@ -60,7 +54,7 @@ type node struct {
 	proxy         IPeerProxy
 
 	// leader only
-	followerInfo map[int]*followerInfo
+	followers *followerInfo
 
 	// candidate only
 	votes map[int]bool
@@ -77,18 +71,11 @@ func NewNode(id int, nodeIDs []int, sm IStateMachine, proxy IPeerProxy) INode {
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
-		logMgr:        newLogMgr(),
+		logMgr:        newLogMgr(sm),
 		stateMachine:  sm,
 		proxy:         proxy,
-		followerInfo:  make(map[int]*followerInfo, size-1),
+		followers:     createFollowerInfo(id, nodeIDs),
 		votes:         make(map[int]bool, size),
-	}
-
-	// Initialize follower info array
-	for _, v := range nodeIDs {
-		if v != id {
-			n.followerInfo[v] = &followerInfo{nodeID: v, nextIndex: 0, matchIndex: -1}
-		}
 	}
 
 	return n
@@ -132,7 +119,9 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 
 	n.votedFor = -1
 
-	fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
+	if n.nodeID != sourceNodeID {
+		fmt.Printf("T%d: Node%d follows Node%d\n", n.currentTerm, n.nodeID, sourceNodeID)
+	}
 }
 
 // enter candidate state
@@ -154,10 +143,7 @@ func (n *node) enterLeaderState() {
 	n.nodeState = Leader
 	n.currentLeader = n.nodeID
 	// reset leader indicies
-	for _, v := range n.followerInfo {
-		v.nextIndex = n.logMgr.lastIndex + 1
-		v.matchIndex = 0
-	}
+	n.followers.reset(n.logMgr.lastIndex)
 
 	fmt.Printf("T%d: Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -182,20 +168,16 @@ func (n *node) startElection() {
 
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
-	// create RV request
-	req := &AppendEntriesRequest{
-		Term:         n.currentTerm,
-		LeaderID:     n.nodeID,
-		PrevLogIndex: n.logMgr.lastIndex,
-		PrevLogTerm:  n.logMgr.lastTerm,
-		Entries:      []LogEntry{},
-		LeaderCommit: n.logMgr.commitIndex,
-	}
-
+	// create empty AE request
+	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, n.logMgr.lastIndex+1)
 	fmt.Printf("T%d: Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different go routines), response will be processed there
-	n.proxy.BroadcastAppendEntries(req, func(reply *AppendEntriesReply) { n.handleAppendEntriesReply(reply) })
+	n.proxy.BroadcastAppendEntries(
+		req,
+		func(reply *AppendEntriesReply) {
+			n.handleAppendEntriesReply(reply)
+		})
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
@@ -218,27 +200,17 @@ func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSame
 	return ret
 }
 
-// tryReplicateLogs to follower as needed
-func (n *node) tryReplicateLogs(follower *followerInfo) {
+// replicateIfAny replicate logs to follower as needed
+func (n *node) replicateIfAny(targetNodeID int) {
+	follower := n.followers.getFollower(targetNodeID)
+
 	if n.logMgr.lastIndex < follower.nextIndex {
 		return
 	}
 
-	// create RV request
-	nextIdx := follower.nextIndex
-	prevIdx := follower.nextIndex - 1
-	prevTerm := -1
-	if prevIdx >= 0 {
-		prevTerm = n.logMgr.logs[prevIdx].Term
-	}
-	req := &AppendEntriesRequest{
-		Term:         n.currentTerm,
-		LeaderID:     n.nodeID,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-		Entries:      n.logMgr.logs[nextIdx:],
-		LeaderCommit: n.logMgr.commitIndex,
-	}
+	// there are logs to replicate, create AE request and send
+	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, follower.nextIndex)
+	fmt.Printf("T%d: Node%d replicating logs to Node%d\n", n.currentTerm, n.nodeID, targetNodeID)
 
 	n.proxy.AppendEntries(
 		follower.nodeID,

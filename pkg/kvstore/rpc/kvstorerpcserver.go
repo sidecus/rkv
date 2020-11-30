@@ -50,7 +50,14 @@ func (s *KVStoreRPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntr
 		}
 	}
 
-	ae := raft.NewAppendEntriesRequest(int(req.Term), int(req.LeaderId), int(req.PrevLogIndex), int(req.PrevLogTerm), int(req.LeaderCommit), entries)
+	ae := &raft.AppendEntriesRequest{
+		Term:         int(req.Term),
+		LeaderID:     int(req.LeaderId),
+		PrevLogIndex: int(req.PrevLogIndex),
+		PrevLogTerm:  int(req.PrevLogTerm),
+		LeaderCommit: int(req.LeaderCommit),
+		Entries:      entries,
+	}
 
 	// Just send the message to the channel
 	resp, err := s.node.AppendEntries(ae)
@@ -68,7 +75,12 @@ func (s *KVStoreRPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntr
 
 // RequestVote requests a vote from the node
 func (s *KVStoreRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteReply, error) {
-	rv := raft.NewRequestVoteRequest(int(req.Term), int(req.CandidateId), int(req.LastLogIndex), int(req.LastLogTerm))
+	rv := &raft.RequestVoteRequest{
+		Term:         int(req.Term),
+		CandidateID:  int(req.CandidateId),
+		LastLogIndex: int(req.LastLogIndex),
+		LastLogTerm:  int(req.LastLogTerm),
+	}
 	resp, err := s.node.RequestVote(rv)
 
 	if err != nil {
@@ -130,7 +142,9 @@ func (s *KVStoreRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*
 // Get implements pb.KVStoreRaftRPCServer.Get
 func (s *KVStoreRPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, error) {
 	key := req.Key
-	resp, err := s.node.Get(raft.NewGetRequest(key))
+	gr := &raft.GetRequest{Params: []interface{}{key}}
+
+	resp, err := s.node.Get(gr)
 
 	if err != nil {
 		return nil, err

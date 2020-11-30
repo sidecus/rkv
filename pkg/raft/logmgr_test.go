@@ -1,9 +1,22 @@
 package raft
 
-import "testing"
+import (
+	"testing"
+)
+
+// IStateMachine holds the interface to a statemachine
+type dummyStateMachine struct {
+}
+
+func (sm *dummyStateMachine) Apply(cmd StateMachineCmd) {
+
+}
+func (sm *dummyStateMachine) Get(param ...interface{}) (result interface{}, err error) {
+	return "a", nil
+}
 
 func TestAppend(t *testing.T) {
-	lm := newLogMgr()
+	lm := newLogMgr(&dummyStateMachine{})
 	cmds := make([]StateMachineCmd, 10)
 	if lm.lastIndex != -1 {
 		t.Error("LastIndex is not -1 upon init")
