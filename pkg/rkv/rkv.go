@@ -26,8 +26,7 @@ func StartRKV(nodeID int, port string, peers []raft.PeerInfo) error {
 
 	// create needed components
 	kvStore := kvstore.NewKVStore()
-	proxy := kvstore.NewPeerProxy(peers)
-	node := raft.NewNode(nodeID, nodeIDs, kvStore, proxy)
+	node := raft.NewNode(nodeID, peers, kvStore, kvstore.KVPeerProxyFactory)
 	rpcServer := kvstore.NewRPCServer(node)
 
 	// start rpc server

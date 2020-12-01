@@ -5,6 +5,34 @@ import (
 	"sync"
 )
 
+// NodeState is the state of the node
+type NodeState int
+
+const (
+	//Follower state
+	Follower = 1
+	// Candidate state
+	Candidate = 2
+	// Leader state
+	Leader = 3
+)
+
+// INode represents one raft node
+type INode interface {
+	// Raft
+	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
+	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
+	OnTimer()
+
+	// Data related
+	Get(*GetRequest) (*GetReply, error)
+	Execute(*StateMachineCmd) (*ExecuteReply, error)
+
+	// Lifecycle
+	Start()
+	Stop()
+}
+
 // ErrorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
 var ErrorNoLeaderAvailable = errors.New("No leader currently available")
 
@@ -22,31 +50,32 @@ type node struct {
 	votedFor      int
 	logMgr        *logManager
 	stateMachine  IStateMachine
-	proxy         IPeerProxy
+	peerMgr       *PeerManager
 
 	// leader only
-	followers followerInfo
+	followerIndicies followerIndicies
 
 	// candidate only
 	votes map[int]bool
 }
 
 // NewNode creates a new node
-func NewNode(id int, nodeIDs []int, sm IStateMachine, proxy IPeerProxy) INode {
-	size := len(nodeIDs)
+func NewNode(nodeID int, peers []PeerInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
+	size := len(peers) + 1
+
 	n := &node{
-		mu:            sync.RWMutex{},
-		clusterSize:   size,
-		nodeID:        id,
-		nodeState:     Follower,
-		currentTerm:   0,
-		currentLeader: -1,
-		votedFor:      -1,
-		logMgr:        newLogMgr(sm),
-		stateMachine:  sm,
-		proxy:         proxy,
-		followers:     createFollowerInfo(id, nodeIDs),
-		votes:         make(map[int]bool, size),
+		mu:               sync.RWMutex{},
+		clusterSize:      size,
+		nodeID:           nodeID,
+		nodeState:        Follower,
+		currentTerm:      0,
+		currentLeader:    -1,
+		votedFor:         -1,
+		logMgr:           newLogMgr(sm),
+		stateMachine:     sm,
+		peerMgr:          NewPeerManager(peers, proxyFactory),
+		followerIndicies: createFollowerIndicies(nodeID, peers),
+		votes:            make(map[int]bool, size),
 	}
 
 	return n
@@ -117,7 +146,7 @@ func (n *node) enterLeaderState() {
 	n.nodeState = Leader
 	n.currentLeader = n.nodeID
 	// reset leader indicies
-	n.followers.reset(n.logMgr.lastIndex)
+	n.followerIndicies.reset(n.logMgr.lastIndex)
 
 	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -135,7 +164,7 @@ func (n *node) startElection() {
 	}
 
 	// request vote (on different go routines), response will be processed on different go routine
-	n.proxy.RequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
+	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
 
 	n.refreshTimer()
 }
@@ -147,7 +176,7 @@ func (n *node) sendHeartbeat() {
 	writeTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different go routines), response will be processed there
-	n.proxy.BroadcastAppendEntries(
+	n.peerMgr.BroadcastAppendEntries(
 		req,
 		func(reply *AppendEntriesReply) {
 			n.handleAppendEntriesReply(reply)
@@ -177,7 +206,7 @@ func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSame
 // replicateLogsIfAny replicate logs to follower as needed
 // This should be only be called by leader
 func (n *node) replicateLogsIfAny(targetNodeID int) {
-	follower := n.followers[targetNodeID]
+	follower := n.followerIndicies[targetNodeID]
 
 	if follower.nextIndex > n.logMgr.lastIndex {
 		// nothing to replicate
@@ -190,7 +219,7 @@ func (n *node) replicateLogsIfAny(targetNodeID int) {
 	maxIdx := req.Entries[len(req.Entries)-1].Index
 	writeInfo("T%d: Node%d replicating logs to Node%d (log%d-log%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
-	n.proxy.AppendEntries(
+	n.peerMgr.AppendEntries(
 		follower.nodeID,
 		req,
 		func(reply *AppendEntriesReply) {
@@ -207,7 +236,7 @@ func (n *node) commitIfAny() {
 			continue
 		}
 
-		if n.followers.majorityMatch(i) {
+		if n.followerIndicies.majorityMatch(i) {
 			commitIndex = i
 		}
 	}
@@ -220,4 +249,16 @@ func (n *node) commitTo(commitIndex int) {
 	if commitIndex >= 0 && n.logMgr.commit(commitIndex) {
 		writeInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, commitIndex)
 	}
+}
+
+// count votes for current node and term
+func (n *node) countVotes() int {
+	total := 0
+	for _, v := range n.votes {
+		if v {
+			total++
+		}
+	}
+
+	return total
 }

@@ -2,6 +2,18 @@ package raft
 
 import "github.com/sidecus/raft/pkg/util"
 
+// StateMachineCmd holds one command to the statemachine
+type StateMachineCmd struct {
+	CmdType int
+	Data    interface{}
+}
+
+// IStateMachine holds the interface to a statemachine
+type IStateMachine interface {
+	Apply(cmd StateMachineCmd)
+	Get(param ...interface{}) (result interface{}, err error)
+}
+
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
 	Index     int

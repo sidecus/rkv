@@ -12,195 +12,99 @@ import (
 
 const rpcTimeOut = time.Duration(150) * time.Millisecond
 
-var errorNoPeersProvided = errors.New("No raft peers provided")
-var errorInvalidNodeID = errors.New("Invalid node id")
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 
-type peerNode struct {
-	info   raft.PeerInfo
+// KVPeerProxy defines the proxy used by kv store
+type KVPeerProxy struct {
 	client pb.KVStoreRaftClient
 }
 
-// PeerProxy manages RPC connection to peer nodes
-type PeerProxy struct {
-	Peers map[int]peerNode
-}
+// KVPeerProxyFactory is the const factory instance
+var KVPeerProxyFactory = &KVPeerProxy{}
 
-// NewPeerProxy creates the node proxy for kv store
-func NewPeerProxy(peers []raft.PeerInfo) raft.IPeerProxy {
-	if len(peers) == 0 {
-		panic(errorNoPeersProvided)
+// NewPeerProxy factory method to create a new proxy
+func (proxy *KVPeerProxy) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
+	conn, err := grpc.Dial(info.Endpoint, grpc.WithInsecure())
+	if err != nil {
+		// Our RPC connection is nonblocking so should not be expecting an error here
+		panic(err.Error())
 	}
 
-	proxy := PeerProxy{
-		Peers: make(map[int]peerNode),
+	client := pb.NewKVStoreRaftClient(conn)
+
+	return &KVPeerProxy{
+		client: client,
 	}
-
-	for _, peer := range peers {
-		conn, err := grpc.Dial(peer.Endpoint, grpc.WithInsecure())
-		if err != nil {
-			// Our RPC connection is nonblocking so should not be expecting an error here
-			panic(err.Error())
-		}
-
-		client := pb.NewKVStoreRaftClient(conn)
-
-		proxy.Peers[peer.NodeID] = peerNode{
-			info:   peer,
-			client: client,
-		}
-	}
-
-	return &proxy
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *PeerProxy) AppendEntries(nodeID int, req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
-	entries := make([]*pb.LogEntry, len(req.Entries))
-	for i, v := range req.Entries {
-		cmd := &pb.KVCmd{
-			CmdType: int32(v.Cmd.CmdType),
-			Data: &pb.KVCmdData{
-				Key:   v.Cmd.Data.(KVCmdData).Key,
-				Value: v.Cmd.Data.(KVCmdData).Value,
-			},
-		}
-		entry := &pb.LogEntry{
-			Index:     int64(v.Index),
-			Term:      int64(v.Term),
-			Committed: v.Committed,
-			Cmd:       cmd,
-		}
+func (proxy *KVPeerProxy) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	defer cancel()
 
-		entries[i] = entry
-	}
+	ae := fromRaftAERequest(req)
+	resp, err := proxy.client.AppendEntries(ctx, ae)
 
-	ae := &pb.AppendEntriesRequest{
-		Term:         int64(req.Term),
-		LeaderId:     int64(req.LeaderID),
-		PrevLogIndex: int64(req.PrevLogIndex),
-		PrevLogTerm:  int64(req.PrevLogTerm),
-		LeaderCommit: int64(req.LeaderCommit),
-		Entries:      entries,
-	}
-
-	// Send request to the peer node on different go routine
-	client := proxy.Peers[nodeID].client
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-		defer cancel()
-		resp, err := client.AppendEntries(ctx, ae)
-		if err == nil {
-			reply := &raft.AppendEntriesReply{
-				NodeID:   nodeID,
-				LeaderID: int(resp.LeaderID),
-				Term:     int(resp.Term),
-				Success:  resp.Success,
-			}
-
-			callback(reply)
-		}
-	}()
-}
-
-// BroadcastAppendEntries handles raft RPC AE calls to all peers (heartbeat)
-func (proxy *PeerProxy) BroadcastAppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
-	// send request to all peers
-	for _, peer := range proxy.Peers {
-		nodeID := peer.info.NodeID
-		proxy.AppendEntries(nodeID, req, callback)
+	if err == nil {
+		reply := toRaftAEReply(resp)
+		callback(reply)
 	}
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *PeerProxy) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
-	rv := &pb.RequestVoteRequest{
-		Term:         int64(req.Term),
-		CandidateId:  int64(req.CandidateID),
-		LastLogIndex: int64(req.LastLogIndex),
-		LastLogTerm:  int64(req.LastLogTerm),
-	}
+func (proxy *KVPeerProxy) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	defer cancel()
 
-	for _, peer := range proxy.Peers {
-		nodeID := peer.info.NodeID
-		client := peer.client
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-			defer cancel()
-			resp, err := client.RequestVote(ctx, rv)
-			if err == nil {
-				reply := &raft.RequestVoteReply{
-					NodeID:      nodeID,
-					Term:        int(resp.Term),
-					VotedTerm:   int(resp.VotedTerm),
-					VoteGranted: resp.VoteGranted,
-				}
-				callback(reply)
-			}
-		}()
+	rv := fromRaftRVRequest(req)
+	resp, err := proxy.client.RequestVote(ctx, rv)
+
+	if err == nil {
+		reply := toRaftRVReply(resp)
+		callback(reply)
 	}
 }
 
 // Get gets values from state machine against leader
-func (proxy *PeerProxy) Get(nodeID int, req *raft.GetRequest) (*raft.GetReply, error) {
-	peer, ok := proxy.Peers[nodeID]
-	if !ok {
-		return nil, errorInvalidNodeID
-	}
-
+func (proxy *KVPeerProxy) Get(req *raft.GetRequest) (*raft.GetReply, error) {
 	if len(req.Params) != 1 {
 		return nil, errorInvalidGetRequest
 	}
 
-	get := &pb.GetRequest{
-		Key: req.Params[0].(string),
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
-	resp, err := peer.client.Get(ctx, get)
+
+	gr := fromRaftGetRequest(req)
+	resp, err := proxy.client.Get(ctx, gr)
+
 	if err != nil {
 		return nil, err
 	}
 
-	return &raft.GetReply{
-		Data: resp.Value,
-	}, nil
+	return toRaftGetReply(resp), nil
 }
 
 // Execute runs a command via the leader
-func (proxy *PeerProxy) Execute(nodeID int, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
-	peer, ok := proxy.Peers[nodeID]
-	if !ok {
-		return nil, errorInvalidNodeID
-	}
+func (proxy *KVPeerProxy) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 
-	respNodeID := -1
-	success := false
-	err := error(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
+
+	var reply *raft.ExecuteReply
+	var err error
 	if cmd.CmdType == KVCmdSet {
-		req := &pb.SetRequest{
-			Key:   cmd.Data.(KVCmdData).Key,
-			Value: cmd.Data.(KVCmdData).Value,
-		}
-		resp, errSet := peer.client.Set(ctx, req)
-		respNodeID, success, err = int(resp.NodeID), resp.Success, errSet
+		req := fromRaftSetRequest(cmd)
+		resp, errSet := proxy.client.Set(ctx, req)
+
+		reply = toRaftSetReply(resp)
+		err = errSet
 	} else {
-		req := &pb.DeleteRequest{
-			Key: cmd.Data.(KVCmdData).Key,
-		}
-		resp, errDel := peer.client.Delete(ctx, req)
-		respNodeID, success, err = int(resp.NodeID), resp.Success, errDel
+		req := fromRaftDeleteRequest(cmd)
+		resp, errDel := proxy.client.Delete(ctx, req)
+
+		reply = toRaftDeleteReply(resp)
+		err = errDel
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	return &raft.ExecuteReply{
-		NodeID:  respNodeID,
-		Success: success,
-	}, err
+	return reply, err
 }

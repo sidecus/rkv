@@ -10,10 +10,10 @@
             "request": "launch",
             "mode": "auto",
             "env": {},
-            //"program": "${workspaceRoot}/cmd/rkv",
-            //"args": ["-nodeid", "0", "-addresses", "localhost:27015,localhost:27016,localhost:27017"]
-            "program": "${workspaceRoot}/cmd/rkvclient",
-            "args": ["get", "-address", "localhost:27015", "-key", "name"]
+            "program": "${workspaceRoot}/cmd/rkv",
+            "args": ["-nodeid", "0", "-addresses", "localhost:27015,localhost:27016,localhost:27017"]
+            //"program": "${workspaceRoot}/cmd/rkvclient",
+            //"args": ["get", "-address", "localhost:27015", "-key", "name"]
         }
     ]
 }

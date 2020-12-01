@@ -18,6 +18,7 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 
 	return &AppendEntriesReply{
 		Term:     n.currentTerm,
+		NodeID:   n.nodeID,
 		LeaderID: req.LeaderID,
 		Success:  success,
 	}, nil
@@ -45,12 +46,10 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	// TODO[sidecus]: low pri, we might want to include the match index in the AE reply
 	// using n.logMgr.lastIndex is not safe here since we are asynchronous unlike the paper
 	nodeID := reply.NodeID
-	n.followers.update(nodeID, reply.Success, n.logMgr.lastIndex)
+	n.followerIndicies.update(nodeID, reply.Success, n.logMgr.lastIndex)
 
-	// Check whether there are logs to commit
+	// Check whether there are logs to commit and then replicate
 	n.commitIfAny()
-
-	// replicate more logs if needed
 	n.replicateLogsIfAny(nodeID)
 }
 
@@ -77,8 +76,8 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	}
 
 	return &RequestVoteReply{
-		NodeID:      n.nodeID,
 		Term:        n.currentTerm,
+		NodeID:      n.nodeID,
 		VotedTerm:   req.Term,
 		VoteGranted: voteGranted,
 	}, nil
@@ -94,25 +93,15 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 		return
 	}
 
-	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate {
-		// stale vote, ignore
+	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
+		// stale vote or denied, ignore
 		return
 	}
 
-	if !reply.VoteGranted {
-		// vote denied, ignore
-		return
-	}
-
-	// record and count votes
 	n.votes[reply.NodeID] = true
-	total := 0
-	for _, v := range n.votes {
-		if v {
-			total++
-		}
-	}
 
+	// count votes
+	total := n.countVotes()
 	if total > n.clusterSize/2 {
 		// we won, set leader status and send heartbeat
 		n.enterLeaderState()
@@ -144,7 +133,7 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	if n.nodeState == Leader {
 		n.logMgr.appendCmd(*cmd, n.currentTerm)
 
-		for _, follower := range n.followers {
+		for _, follower := range n.followerIndicies {
 			n.replicateLogsIfAny(follower.nodeID)
 		}
 
@@ -167,5 +156,5 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 
 	// proxy to leader instead, no lock needed
 	// otherwise we might have a deadlock between this and the leader
-	return n.proxy.Execute(leader, cmd)
+	return n.peerMgr.Execute(leader, cmd)
 }
