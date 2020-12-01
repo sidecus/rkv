@@ -49,7 +49,7 @@ type node struct {
 	peerMgr       *PeerManager
 
 	// leader only
-	followerIndicies followerIndicies
+	followerIndices followerIndices
 
 	// candidate only
 	votes map[int]bool
@@ -60,18 +60,18 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 	size := len(peers) + 1
 
 	n := &node{
-		mu:               sync.RWMutex{},
-		clusterSize:      size,
-		nodeID:           nodeID,
-		nodeState:        Follower,
-		currentTerm:      0,
-		currentLeader:    -1,
-		votedFor:         -1,
-		logMgr:           newLogMgr(sm),
-		stateMachine:     sm,
-		peerMgr:          NewPeerManager(peers, proxyFactory),
-		followerIndicies: createFollowerIndicies(nodeID, peers),
-		votes:            make(map[int]bool, size),
+		mu:              sync.RWMutex{},
+		clusterSize:     size,
+		nodeID:          nodeID,
+		nodeState:       Follower,
+		currentTerm:     0,
+		currentLeader:   -1,
+		votedFor:        -1,
+		logMgr:          newLogMgr(sm),
+		stateMachine:    sm,
+		peerMgr:         NewPeerManager(peers, proxyFactory),
+		followerIndices: createFollowerIndicies(nodeID, peers),
+		votes:           make(map[int]bool, size),
 	}
 
 	return n
@@ -142,7 +142,7 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset leader indicies
-	n.followerIndicies.reset(n.logMgr.lastIndex)
+	n.followerIndices.resetAll(n.logMgr.lastIndex)
 
 	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -172,7 +172,7 @@ func (n *node) startElection() {
 		LastLogTerm:  n.logMgr.lastTerm,
 	}
 
-	// request vote (on different go routines), response will be processed on different go routine
+	// request vote (on different goroutines), response will be processed there
 	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
 
 	n.refreshTimer()
@@ -184,7 +184,7 @@ func (n *node) sendHeartbeat() {
 	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, n.logMgr.lastIndex+1)
 	writeTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
-	// send heart beat (on different go routines), response will be processed there
+	// send heart beat (on different goroutines), response will be processed there
 	n.peerMgr.BroadcastAppendEntries(
 		req,
 		func(reply *AppendEntriesReply) {
@@ -216,40 +216,40 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 	return false
 }
 
-// replicateLogsIfAny replicate logs to follower as needed
+// replicateLogsTo replicate logs to follower as needed
 // This should be only be called by leader
-func (n *node) replicateLogsIfAny(targetNodeID int) {
-	follower := n.followerIndicies[targetNodeID]
+func (n *node) replicateLogsTo(targetNodeID int) {
+	target := n.followerIndices[targetNodeID]
 
-	if follower.nextIndex > n.logMgr.lastIndex {
+	if target.nextIndex > n.logMgr.lastIndex {
 		// nothing to replicate
 		return
 	}
 
 	// there are logs to replicate, create AE request and send
-	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, follower.nextIndex)
+	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, target.nextIndex)
 	minIdx := req.Entries[0].Index
 	maxIdx := req.Entries[len(req.Entries)-1].Index
 	writeInfo("T%d: Node%d replicating logs to Node%d (log#%d-log#%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
 	n.peerMgr.AppendEntries(
-		follower.nodeID,
+		target.nodeID,
 		req,
 		func(reply *AppendEntriesReply) {
 			n.handleAppendEntriesReply(reply)
 		})
 }
 
-// commitIfAny commits logs as needed by checking each follower's match index
+// leaderCommit commits logs as needed by checking each follower's match index
 // This should only be called by leader
-func (n *node) commitIfAny() {
+func (n *node) leaderCommit() {
 	commitIndex := n.logMgr.commitIndex
 	for i := n.logMgr.lastIndex; i > n.logMgr.commitIndex; i-- {
 		if n.logMgr.logs[i].Term != n.currentTerm {
 			continue
 		}
 
-		if n.followerIndicies.majorityMatch(i) {
+		if n.followerIndices.majorityMatch(i) {
 			commitIndex = i
 			break
 		}

@@ -7,12 +7,12 @@ type followerIndex struct {
 	matchIndex int
 }
 
-// followerIndicies manages next/match indicies for all followers
+// followerIndices manages next/match indicies for all followers
 // This is used by leader to replicate logs
-type followerIndicies map[int]*followerIndex
+type followerIndices map[int]*followerIndex
 
 // createFollowerIndicies creates the follower indicies
-func createFollowerIndicies(nodeID int, peers map[int]PeerInfo) followerIndicies {
+func createFollowerIndicies(nodeID int, peers map[int]PeerInfo) followerIndices {
 	ret := make(map[int]*followerIndex, len(peers))
 
 	// Initialize follower info array
@@ -23,14 +23,14 @@ func createFollowerIndicies(nodeID int, peers map[int]PeerInfo) followerIndicies
 	return ret
 }
 
-func (info followerIndicies) reset(lastLogIndex int) {
+func (info followerIndices) resetAll(lastLogIndex int) {
 	for _, v := range info {
 		v.nextIndex = lastLogIndex + 1
 		v.matchIndex = -1
 	}
 }
 
-func (info followerIndicies) update(nodeID int, aeReplySuccess bool, lastLogIndex int) {
+func (info followerIndices) update(nodeID int, aeReplySuccess bool, lastLogIndex int) {
 	follower := info[nodeID]
 	if aeReplySuccess {
 		follower.nextIndex = lastLogIndex + 1
@@ -44,7 +44,7 @@ func (info followerIndicies) update(nodeID int, aeReplySuccess bool, lastLogInde
 	}
 }
 
-func (info followerIndicies) majorityMatch(index int) bool {
+func (info followerIndices) majorityMatch(index int) bool {
 	if index < 0 {
 		panic("cannot have majority match on negative index")
 	}

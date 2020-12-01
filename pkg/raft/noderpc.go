@@ -59,11 +59,11 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
 	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
 	nodeID := reply.NodeID
-	n.followerIndicies.update(nodeID, reply.Success, reply.LastMatch)
+	n.followerIndices.update(nodeID, reply.Success, reply.LastMatch)
 
 	// Check whether there are logs to commit and then replicate
-	n.commitIfAny()
-	n.replicateLogsIfAny(nodeID)
+	n.leaderCommit()
+	n.replicateLogsTo(nodeID)
 }
 
 // RequestVote handles raft RPC RV calls
@@ -151,8 +151,8 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	if n.nodeState == Leader {
 		n.logMgr.appendCmd(*cmd, n.currentTerm)
 
-		for _, follower := range n.followerIndicies {
-			n.replicateLogsIfAny(follower.nodeID)
+		for _, follower := range n.followerIndices {
+			n.replicateLogsTo(follower.nodeID)
 		}
 
 		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit.

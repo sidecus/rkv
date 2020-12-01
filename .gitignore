@@ -17,5 +17,6 @@
 .VSCodeCounter
 
 # other files to ignore
-/cmd/raft/raft
+/cmd/rkv/rkv
+/cmd/rkv/rkvclient
 *_debug_bin
