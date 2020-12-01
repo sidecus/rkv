@@ -20,9 +20,9 @@ type RPCServer struct {
 	pb.UnimplementedKVStoreRaftServer
 }
 
-// NewRPCServer creates a new RPC server
-func NewRPCServer(node raft.INode) RPCServer {
-	return RPCServer{
+// NewServer creates a new RPC server
+func NewServer(node raft.INode) *RPCServer {
+	return &RPCServer{
 		node: node,
 	}
 }

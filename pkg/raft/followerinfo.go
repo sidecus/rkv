@@ -12,15 +12,15 @@ type followerIndex struct {
 type followerIndicies map[int]*followerIndex
 
 // createFollowerIndicies creates the follower indicies
-func createFollowerIndicies(nodeID int, peers []PeerInfo) followerIndicies {
-	info := make(map[int]*followerIndex, len(peers))
+func createFollowerIndicies(nodeID int, peers map[int]PeerInfo) followerIndicies {
+	ret := make(map[int]*followerIndex, len(peers))
 
 	// Initialize follower info array
 	for _, v := range peers {
-		info[v.NodeID] = &followerIndex{nodeID: v.NodeID, nextIndex: 0, matchIndex: -1}
+		ret[v.NodeID] = &followerIndex{nodeID: v.NodeID, nextIndex: 0, matchIndex: -1}
 	}
 
-	return info
+	return ret
 }
 
 func (info followerIndicies) reset(lastLogIndex int) {

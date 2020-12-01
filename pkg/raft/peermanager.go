@@ -42,8 +42,8 @@ var errorNoPeersProvided = errors.New("No raft peers provided")
 var errorInvalidNodeID = errors.New("Invalid node id")
 
 // NewPeerManager creates the node proxy for kv store
-func NewPeerManager(peerInfo []PeerInfo, factory IPeerProxyFactory) *PeerManager {
-	if len(peerInfo) == 0 {
+func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) *PeerManager {
+	if len(peers) == 0 {
 		panic(errorNoPeersProvided)
 	}
 
@@ -51,7 +51,7 @@ func NewPeerManager(peerInfo []PeerInfo, factory IPeerProxyFactory) *PeerManager
 		Peers: make(map[int]Peer),
 	}
 
-	for _, info := range peerInfo {
+	for _, info := range peers {
 		proxy := factory.NewPeerProxy(info)
 
 		mgr.Peers[info.NodeID] = Peer{

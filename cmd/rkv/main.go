@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sidecus/raft/pkg/kvstore"
 	"github.com/sidecus/raft/pkg/raft"
-	"github.com/sidecus/raft/pkg/rkv"
 )
 
 var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
@@ -47,19 +47,19 @@ func printUsage() {
 
 func runRPC(nodeID int, port string, addresses []string) {
 	// initialize peers
-	var peers []raft.PeerInfo
+	peers := make(map[int]raft.PeerInfo)
 	for i, v := range addresses {
 		if i == nodeID {
 			continue
 		}
 
-		peers = append(peers, raft.PeerInfo{
+		peers[i] = raft.PeerInfo{
 			NodeID:   i,
 			Endpoint: v,
-		})
+		}
 	}
 
-	rkv.StartRKV(nodeID, port, peers)
+	kvstore.StartRaftKVStore(nodeID, port, peers)
 }
 
 func getNodePort(nodeID int, addresses []string) (string, error) {

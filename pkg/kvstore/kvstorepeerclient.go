@@ -14,16 +14,16 @@ const rpcTimeOut = time.Duration(150) * time.Millisecond
 
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 
-// KVPeerProxy defines the proxy used by kv store
-type KVPeerProxy struct {
+// KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
+type KVPeerClient struct {
 	client pb.KVStoreRaftClient
 }
 
-// KVPeerProxyFactory is the const factory instance
-var KVPeerProxyFactory = &KVPeerProxy{}
+// KVPeerClientFactory is the const factory instance
+var KVPeerClientFactory = &KVPeerClient{}
 
 // NewPeerProxy factory method to create a new proxy
-func (proxy *KVPeerProxy) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
+func (proxy *KVPeerClient) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
 	conn, err := grpc.Dial(info.Endpoint, grpc.WithInsecure())
 	if err != nil {
 		// Our RPC connection is nonblocking so should not be expecting an error here
@@ -32,13 +32,13 @@ func (proxy *KVPeerProxy) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
 
 	client := pb.NewKVStoreRaftClient(conn)
 
-	return &KVPeerProxy{
+	return &KVPeerClient{
 		client: client,
 	}
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerProxy) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
@@ -52,7 +52,7 @@ func (proxy *KVPeerProxy) AppendEntries(req *raft.AppendEntriesRequest, callback
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerProxy) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
+func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
@@ -66,7 +66,7 @@ func (proxy *KVPeerProxy) RequestVote(req *raft.RequestVoteRequest, callback fun
 }
 
 // Get gets values from state machine against leader
-func (proxy *KVPeerProxy) Get(req *raft.GetRequest) (*raft.GetReply, error) {
+func (proxy *KVPeerClient) Get(req *raft.GetRequest) (*raft.GetReply, error) {
 	if len(req.Params) != 1 {
 		return nil, errorInvalidGetRequest
 	}
@@ -85,7 +85,7 @@ func (proxy *KVPeerProxy) Get(req *raft.GetRequest) (*raft.GetReply, error) {
 }
 
 // Execute runs a command via the leader
-func (proxy *KVPeerProxy) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+func (proxy *KVPeerClient) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()

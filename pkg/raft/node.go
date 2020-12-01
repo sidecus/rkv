@@ -60,7 +60,7 @@ type node struct {
 }
 
 // NewNode creates a new node
-func NewNode(nodeID int, peers []PeerInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
+func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
 	size := len(peers) + 1
 
 	n := &node{
