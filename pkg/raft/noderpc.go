@@ -1,26 +1,39 @@
 package raft
 
+import "errors"
+
 // This file implements node methods related to raft RPC calls
+
+// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // AppendEntries handles raft RPC AE calls
 func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	n.tryFollowHigherTerm(req.LeaderID, req.Term, true)
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
 
-	success := false
+	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
+
+	lastMatch, success := -1, false
 	if req.Term >= n.currentTerm {
-		// only process logs when term is the same or larger
+		// only process logs when term is valid
 		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
-		n.commitTo(req.LeaderCommit)
+		if success {
+			// logs are catching up - at least matching up to n.logMgr.lastIndex
+			// try to commit
+			lastMatch = n.logMgr.lastIndex
+			n.commitTo(req.LeaderCommit)
+		}
 	}
 
 	return &AppendEntriesReply{
-		Term:     n.currentTerm,
-		NodeID:   n.nodeID,
-		LeaderID: req.LeaderID,
-		Success:  success,
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   success,
+		LastIndex: lastMatch, // this is only meaningful when Success is true
 	}, nil
 }
 
@@ -31,7 +44,7 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	defer n.mu.Unlock()
 
 	// If there is a higher term, follow and stop processing
-	if n.tryFollowHigherTerm(reply.LeaderID, reply.Term, false) {
+	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
 		return
 	}
 
@@ -64,7 +77,7 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	// 3. if req.Term >= currentTerm:
 	//   a. if votedFor is null or candidateId, and logs are up to date, grant vote
 	// The req.Term == currentTerm situation AFAIK can only happen when we receive a duplicate RV request
-	n.tryFollowHigherTerm(req.CandidateID, req.Term, false)
+	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
 	voteGranted := false
 	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
 		// 5.2&5.4 - vote only when candidate's log is at least up to date with current node
@@ -88,12 +101,14 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.tryFollowHigherTerm(reply.NodeID, reply.Term, false) {
+	if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
 		// there is a higher term, no need to continue
 		return
 	}
 
-	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
+	if reply.VotedTerm != n.currentTerm ||
+		n.nodeState != Candidate ||
+		!reply.VoteGranted {
 		// stale vote or denied, ignore
 		return
 	}
@@ -120,7 +135,10 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 		return nil, err
 	}
 
-	return &GetReply{NodeID: n.nodeID, Data: ret}, nil
+	return &GetReply{
+		NodeID: n.nodeID,
+		Data:   ret,
+	}, nil
 }
 
 // Execute runs a command via the raft node
@@ -137,9 +155,9 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 			n.replicateLogsIfAny(follower.nodeID)
 		}
 
-		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit
-		// For now we return eagerly and don't wait for commit in Execute
-		// Instead commit is done asynchronously after replication
+		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit.
+		// For now we return eagerly and don't wait for agreement from majority.
+		// Instead commit is done asynchronously after replication.
 
 		n.mu.Unlock()
 		return &ExecuteReply{
@@ -151,7 +169,7 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Unlock()
 
 	if leader == -1 {
-		return nil, ErrorNoLeaderAvailable
+		return nil, errorNoLeaderAvailable
 	}
 
 	// proxy to leader instead, no lock needed

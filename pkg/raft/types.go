@@ -12,10 +12,11 @@ type AppendEntriesRequest struct {
 
 // AppendEntriesReply reply type for AE calls
 type AppendEntriesReply struct {
-	NodeID   int
-	Term     int
-	LeaderID int
-	Success  bool
+	NodeID    int
+	Term      int
+	LeaderID  int
+	LastIndex int
+	Success   bool
 }
 
 // RequestVoteRequest request type for RV calls

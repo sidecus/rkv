@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"errors"
 	"sync"
 )
 
@@ -33,9 +32,6 @@ type INode interface {
 	Stop()
 }
 
-// ErrorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
-var ErrorNoLeaderAvailable = errors.New("No leader currently available")
-
 // node A raft node
 type node struct {
 	// node lock
@@ -47,7 +43,7 @@ type node struct {
 	nodeState     NodeState
 	currentTerm   int
 	currentLeader int
-	votedFor      int
+	votedFor      int // resets on term change
 	logMgr        *logManager
 	stateMachine  IStateMachine
 	peerMgr       *PeerManager
@@ -116,13 +112,12 @@ func (n *node) refreshTimer() {
 
 // enter follower state and follows new leader (or potential leader)
 func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
+	oldLeader := n.currentLeader
 	n.nodeState = Follower
-	n.currentTerm = newTerm
 	n.currentLeader = sourceNodeID
+	n.setTerm(newTerm)
 
-	n.votedFor = -1
-
-	if n.nodeID != sourceNodeID {
+	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
 		writeInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
 	}
 }
@@ -130,25 +125,39 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 // enter candidate state
 func (n *node) enterCandidateState() {
 	n.nodeState = Candidate
-	n.currentTerm++
 	n.currentLeader = -1
+	n.setTerm(n.currentTerm + 1)
 
 	// vote for self first
 	n.votedFor = n.nodeID
 	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
 
-	writeTrace("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
+	writeInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
 	n.nodeState = Leader
 	n.currentLeader = n.nodeID
+
 	// reset leader indicies
 	n.followerIndicies.reset(n.logMgr.lastIndex)
 
 	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
+}
+
+func (n *node) setTerm(newTerm int) {
+	if newTerm < n.currentTerm {
+		logger.Panicf("can't set new term %d, which is less than current term %d", newTerm, n.currentTerm)
+	}
+
+	if newTerm > n.currentTerm {
+		// reset vote on higher term
+		n.votedFor = -1
+	}
+
+	n.currentTerm = newTerm
 }
 
 // start an election, caller should acquire write lock
@@ -186,21 +195,25 @@ func (n *node) sendHeartbeat() {
 	n.refreshTimer()
 }
 
-// Check peer's term and follow if it's higher. This will be called upon all RPC request and responses.
-// Returns true if we are following a higher term
-func (n *node) tryFollowHigherTerm(sourceNodeID, newTerm int, refreshTimerOnSameTerm bool) bool {
-	ret := false
+// Check peer's term and follow if needed. This will be called upon all RPC request and responses.
+// Returns true if we are following the given node and term
+func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool) bool {
+	follow := false
 	if newTerm > n.currentTerm {
-		// Treat the source node as the potential leader for the higher term
-		// Till real heartbeat for that term arrives, the source node potentially knows better about the leader than us
+		// Follow newer term right away. sourceNodeID might not be the new leader, but it potentially
+		// has better knowledge of the leader than us
+		follow = true
+	} else if newTerm == n.currentTerm && isAppendEntries {
+		// For AE calls, we should follow as well
+		follow = true
+	}
+
+	if follow {
 		n.enterFollowerState(sourceNodeID, newTerm)
-		n.refreshTimer()
-		ret = true
-	} else if newTerm == n.currentTerm && refreshTimerOnSameTerm {
 		n.refreshTimer()
 	}
 
-	return ret
+	return false
 }
 
 // replicateLogsIfAny replicate logs to follower as needed
@@ -238,6 +251,7 @@ func (n *node) commitIfAny() {
 
 		if n.followerIndicies.majorityMatch(i) {
 			commitIndex = i
+			break
 		}
 	}
 

@@ -26,7 +26,7 @@ func createFollowerIndicies(nodeID int, peers map[int]PeerInfo) followerIndicies
 func (info followerIndicies) reset(lastLogIndex int) {
 	for _, v := range info {
 		v.nextIndex = lastLogIndex + 1
-		v.matchIndex = 0
+		v.matchIndex = -1
 	}
 }
 
