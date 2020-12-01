@@ -15,7 +15,7 @@ type AppendEntriesReply struct {
 	NodeID    int
 	Term      int
 	LeaderID  int
-	LastIndex int
+	LastMatch int
 	Success   bool
 }
 

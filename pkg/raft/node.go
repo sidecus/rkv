@@ -230,7 +230,7 @@ func (n *node) replicateLogsIfAny(targetNodeID int) {
 	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, follower.nextIndex)
 	minIdx := req.Entries[0].Index
 	maxIdx := req.Entries[len(req.Entries)-1].Index
-	writeInfo("T%d: Node%d replicating logs to Node%d (log%d-log%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+	writeInfo("T%d: Node%d replicating logs to Node%d (log#%d-log#%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
 	n.peerMgr.AppendEntries(
 		follower.nodeID,

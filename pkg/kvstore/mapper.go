@@ -74,19 +74,21 @@ func fromRaftAERequest(req *raft.AppendEntriesRequest) *pb.AppendEntriesRequest 
 
 func toRaftAEReply(resp *pb.AppendEntriesReply) *raft.AppendEntriesReply {
 	return &raft.AppendEntriesReply{
-		NodeID:   int(resp.NodeID),
-		LeaderID: int(resp.LeaderID),
-		Term:     int(resp.Term),
-		Success:  resp.Success,
+		NodeID:    int(resp.NodeID),
+		LeaderID:  int(resp.LeaderID),
+		Term:      int(resp.Term),
+		Success:   resp.Success,
+		LastMatch: int(resp.LastMatch),
 	}
 }
 
 func fromRaftAEReply(resp *raft.AppendEntriesReply) *pb.AppendEntriesReply {
 	return &pb.AppendEntriesReply{
-		Term:     int64(resp.Term),
-		NodeID:   int64(resp.NodeID),
-		LeaderID: int64(resp.LeaderID),
-		Success:  resp.Success,
+		Term:      int64(resp.Term),
+		NodeID:    int64(resp.NodeID),
+		LeaderID:  int64(resp.LeaderID),
+		Success:   resp.Success,
+		LastMatch: int64(resp.LastMatch),
 	}
 }
 

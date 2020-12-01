@@ -21,8 +21,7 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 		// only process logs when term is valid
 		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
 		if success {
-			// logs are catching up - at least matching up to n.logMgr.lastIndex
-			// try to commit
+			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
 			lastMatch = n.logMgr.lastIndex
 			n.commitTo(req.LeaderCommit)
 		}
@@ -33,7 +32,7 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 		NodeID:    n.nodeID,
 		LeaderID:  n.currentLeader,
 		Success:   success,
-		LastIndex: lastMatch, // this is only meaningful when Success is true
+		LastMatch: lastMatch, // this is only meaningful when Success is true
 	}, nil
 }
 
@@ -55,11 +54,12 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 		return
 	}
 
-	// 5.3 update leader indicies
-	// TODO[sidecus]: low pri, we might want to include the match index in the AE reply
-	// using n.logMgr.lastIndex is not safe here since we are asynchronous unlike the paper
+	// 5.3 update leader indicies.
+	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
+	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
+	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
 	nodeID := reply.NodeID
-	n.followerIndicies.update(nodeID, reply.Success, n.logMgr.lastIndex)
+	n.followerIndicies.update(nodeID, reply.Success, reply.LastMatch)
 
 	// Check whether there are logs to commit and then replicate
 	n.commitIfAny()
