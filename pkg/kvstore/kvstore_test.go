@@ -17,7 +17,7 @@ func TestCmdSet(t *testing.T) {
 		},
 	})
 
-	if v, _ := store.getValue("a"); v != "a" {
+	if v, _ := store.Get("a"); v != "a" {
 		t.Error("Set doesn't set value correctly")
 	}
 
@@ -29,7 +29,7 @@ func TestCmdSet(t *testing.T) {
 		},
 	})
 
-	if v, _ := store.getValue("a"); v != "A" {
+	if v, _ := store.Get("a"); v != "A" {
 		t.Error("Set doesn't set value correctly upon existing entry")
 	}
 }

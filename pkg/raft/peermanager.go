@@ -2,6 +2,8 @@ package raft
 
 import (
 	"errors"
+
+	"github.com/sidecus/raft/pkg/util"
 )
 
 // PeerInfo contains info for a peer node
@@ -44,7 +46,7 @@ var errorInvalidNodeID = errors.New("Invalid node id")
 // NewPeerManager creates the node proxy for kv store
 func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) *PeerManager {
 	if len(peers) == 0 {
-		panic(errorNoPeersProvided)
+		util.Panicln(errorNoPeersProvided)
 	}
 
 	mgr := &PeerManager{
@@ -96,13 +98,13 @@ func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, callback f
 	}
 }
 
-// Get gets values from state machine against leader
+// Get gets values from state machine against leader, runs on current goroutine
 func (mgr *PeerManager) Get(nodeID int, req *GetRequest) (*GetReply, error) {
 	peer := mgr.getPeer(nodeID)
 	return peer.proxy.Get(req)
 }
 
-// Execute runs a command via the leader
+// Execute runs a command via the leader, runs on current goroutine
 func (mgr *PeerManager) Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error) {
 	peer := mgr.getPeer(nodeID)
 	return peer.proxy.Execute(cmd)
@@ -112,7 +114,7 @@ func (mgr *PeerManager) Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply
 func (mgr *PeerManager) getPeer(nodeID int) Peer {
 	peer, ok := mgr.Peers[nodeID]
 	if !ok {
-		panic(errorInvalidNodeID.Error())
+		util.Panicln(errorInvalidNodeID)
 	}
 
 	return peer

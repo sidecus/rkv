@@ -95,7 +95,7 @@ func TestEnterLeaderState(t *testing.T) {
 		currentTerm:   50,
 		currentLeader: -1,
 		followers:     followerIndicies,
-		logMgr: &logManager{
+		logMgr: &LogManager{
 			lastIndex: 3,
 		},
 	}

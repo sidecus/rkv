@@ -18,7 +18,7 @@ type followerInfo map[int]*followerIndex
 // createFollowers creates the follower indicies
 func createFollowers(nodeID int, peers map[int]PeerInfo) followerInfo {
 	if _, ok := peers[nodeID]; ok {
-		panic("current node is listed in peers")
+		util.Panicf("current node %d is listed in peers\n", nodeID)
 	}
 
 	ret := make(map[int]*followerIndex, len(peers))
@@ -47,7 +47,7 @@ func (info followerInfo) resetAllIndices(lastLogIndex int) {
 func (info followerInfo) updateMatchIndex(nodeID int, match bool, lastMatch int) {
 	follower := info[nodeID]
 	if follower == nil {
-		panic("Invalid nodeID when calling updateMatchIndex")
+		util.Panicf("Invalid nodeID %d when calling updateMatchIndex\n", nodeID)
 	}
 
 	if match {

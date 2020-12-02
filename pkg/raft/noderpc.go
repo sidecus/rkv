@@ -1,6 +1,10 @@
 package raft
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/sidecus/raft/pkg/util"
+)
 
 // This file implements node methods related to raft RPC calls
 
@@ -19,10 +23,10 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 	lastMatch, success := -1, false
 	if req.Term >= n.currentTerm {
 		// only process logs when term is valid
-		success = n.logMgr.appendLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		success = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
 		if success {
 			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
-			lastMatch = n.logMgr.lastIndex
+			lastMatch = n.logMgr.LastIndex()
 			n.commitTo(req.LeaderCommit)
 		}
 	}
@@ -82,10 +86,10 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	voteGranted := false
 	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
 		// 5.2&5.4 - vote only when candidate's log is at least up to date with current node
-		if req.LastLogIndex >= n.logMgr.lastIndex && req.LastLogTerm >= n.logMgr.lastTerm {
+		if req.LastLogIndex >= n.logMgr.LastIndex() && req.LastLogTerm >= n.logMgr.LastTerm() {
 			n.votedFor = req.CandidateID
 			voteGranted = true
-			writeInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
+			util.WriteInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
 		}
 	}
 
@@ -129,16 +133,17 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	ret, err := n.stateMachine.Get(req.Params...)
+	ret, err := n.logMgr.Get(req.Params...)
 
-	if err != nil {
-		return nil, err
+	var result *GetReply = nil
+	if err == nil {
+		result = &GetReply{
+			NodeID: n.nodeID,
+			Data:   ret,
+		}
 	}
 
-	return &GetReply{
-		NodeID: n.nodeID,
-		Data:   ret,
-	}, nil
+	return result, err
 }
 
 // Execute runs a command via the raft node
@@ -148,31 +153,30 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Lock()
 
 	leader := n.currentLeader
+	success := false
+
 	if n.nodeState == Leader {
-		n.logMgr.appendCmd(*cmd, n.currentTerm)
+		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
 
 		for _, follower := range n.followers {
 			n.replicateLogsTo(follower.nodeID)
 		}
 
 		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
-		// For now we return eagerly and don't wait for agreement from majority.
-		// Instead commit is done asynchronously after replication.
-
-		n.mu.Unlock()
-		return &ExecuteReply{
-			NodeID:  n.nodeID,
-			Success: true,
-		}, nil
+		// For now we return eagerly and don't wait for majority based commit.
+		// Instead commit is done asynchronously after replication (upon AE replies).
+		success = true
 	}
 
 	n.mu.Unlock()
 
-	if leader == -1 {
+	if success {
+		return &ExecuteReply{NodeID: n.nodeID, Success: true}, nil
+	} else if leader == -1 {
 		return nil, errorNoLeaderAvailable
 	}
 
 	// proxy to leader instead, no lock needed
-	// otherwise we might have a deadlock between this and the leader
+	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
 	return n.peerMgr.Execute(leader, cmd)
 }

@@ -3,6 +3,7 @@ package kvstore
 import (
 	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/util"
 )
 
 // TODO[sidecus]: use automapper?
@@ -174,7 +175,7 @@ func toRaftSetRequest(req *pb.SetRequest) *raft.StateMachineCmd {
 
 func fromRaftSetRequest(cmd *raft.StateMachineCmd) *pb.SetRequest {
 	if cmd.CmdType != KVCmdSet {
-		panic("invalid cmd type")
+		util.Panicf("invalid cmd type for Set")
 	}
 
 	return &pb.SetRequest{

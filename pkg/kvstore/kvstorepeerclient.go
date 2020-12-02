@@ -7,6 +7,7 @@ import (
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/util"
 	"google.golang.org/grpc"
 )
 
@@ -27,7 +28,7 @@ func (proxy *KVPeerClient) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
 	conn, err := grpc.Dial(info.Endpoint, grpc.WithInsecure())
 	if err != nil {
 		// Our RPC connection is nonblocking so should not be expecting an error here
-		panic(err.Error())
+		util.Panicln(err)
 	}
 
 	client := pb.NewKVStoreRaftClient(conn)

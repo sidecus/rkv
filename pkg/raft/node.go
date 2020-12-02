@@ -2,6 +2,8 @@ package raft
 
 import (
 	"sync"
+
+	"github.com/sidecus/raft/pkg/util"
 )
 
 // NodeState is the state of the node
@@ -44,8 +46,7 @@ type node struct {
 	currentTerm   int
 	currentLeader int
 	votedFor      int // resets on term change
-	logMgr        *logManager
-	stateMachine  IStateMachine
+	logMgr        ILogManager
 	peerMgr       *PeerManager
 
 	// leader only
@@ -67,8 +68,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
-		logMgr:        newLogMgr(sm),
-		stateMachine:  sm,
+		logMgr:        NewLogMgr(sm),
 		peerMgr:       NewPeerManager(peers, proxyFactory),
 		followers:     createFollowers(nodeID, peers),
 		votes:         make(map[int]bool, size),
@@ -95,7 +95,7 @@ func (n *node) Start() {
 	n.mu.Lock()
 	n.mu.Unlock()
 
-	writeInfo("Node%d starting...", n.nodeID)
+	util.WriteInfo("Node%d starting...", n.nodeID)
 	n.enterFollowerState(n.nodeID, 0)
 	startRaftTimer(n)
 }
@@ -118,7 +118,7 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	n.setTerm(newTerm)
 
 	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
-		writeInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
+		util.WriteInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
 	}
 }
 
@@ -133,7 +133,7 @@ func (n *node) enterCandidateState() {
 	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
 
-	writeInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
+	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
@@ -142,14 +142,14 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.followers.resetAllIndices(n.logMgr.lastIndex)
+	n.followers.resetAllIndices(n.logMgr.LastIndex())
 
-	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
+	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
 func (n *node) setTerm(newTerm int) {
 	if newTerm < n.currentTerm {
-		logger.Panicf("can't set new term %d, which is less than current term %d", newTerm, n.currentTerm)
+		util.Panicf("can't set new term %d, which is less than current term %d\n", newTerm, n.currentTerm)
 	}
 
 	if newTerm > n.currentTerm {
@@ -168,8 +168,8 @@ func (n *node) startElection() {
 	req := &RequestVoteRequest{
 		Term:         n.currentTerm,
 		CandidateID:  n.nodeID,
-		LastLogIndex: n.logMgr.lastIndex,
-		LastLogTerm:  n.logMgr.lastTerm,
+		LastLogIndex: n.logMgr.LastIndex(),
+		LastLogTerm:  n.logMgr.LastTerm(),
 	}
 
 	// request vote (on different goroutines), response will be processed there
@@ -181,8 +181,8 @@ func (n *node) startElection() {
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
 	// create empty AE request
-	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, n.logMgr.lastIndex+1)
-	writeTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
+	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, n.logMgr.LastIndex()+1)
+	util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different goroutines), response will be processed there
 	n.peerMgr.BroadcastAppendEntries(
@@ -221,16 +221,16 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 func (n *node) replicateLogsTo(targetNodeID int) {
 	target := n.followers[targetNodeID]
 
-	if target.nextIndex > n.logMgr.lastIndex {
+	if target.nextIndex > n.logMgr.LastIndex() {
 		// nothing to replicate
 		return
 	}
 
 	// there are logs to replicate, create AE request and send
-	req := n.logMgr.createAERequest(n.currentTerm, n.nodeID, target.nextIndex)
+	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, target.nextIndex)
 	minIdx := req.Entries[0].Index
 	maxIdx := req.Entries[len(req.Entries)-1].Index
-	writeInfo("T%d: Node%d replicating logs to Node%d (log#%d-log#%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+	util.WriteInfo("T%d: Node%d replicating logs to Node%d (log#%d-log#%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
 	n.peerMgr.AppendEntries(
 		target.nodeID,
@@ -243,9 +243,10 @@ func (n *node) replicateLogsTo(targetNodeID int) {
 // leaderCommit commits logs as needed by checking each follower's match index
 // This should only be called by leader
 func (n *node) leaderCommit() {
-	commitIndex := n.logMgr.commitIndex
-	for i := n.logMgr.lastIndex; i > n.logMgr.commitIndex; i-- {
-		if n.logMgr.logs[i].Term != n.currentTerm {
+	commitIndex := n.logMgr.CommitIndex()
+	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
+		entry := n.logMgr.GetLogEntry(i)
+		if entry.Term != n.currentTerm {
 			continue
 		}
 
@@ -260,8 +261,8 @@ func (n *node) leaderCommit() {
 
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
-	if targetCommitIndex >= 0 && n.logMgr.commit(targetCommitIndex) {
-		writeInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, n.logMgr.commitIndex)
+	if targetCommitIndex >= 0 && n.logMgr.Commit(targetCommitIndex) {
+		util.WriteInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 	}
 }
 
