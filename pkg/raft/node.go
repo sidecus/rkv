@@ -259,9 +259,9 @@ func (n *node) leaderCommit() {
 }
 
 // Called by both leader (upon AE reply) or follower (upon AE request)
-func (n *node) commitTo(commitIndex int) {
-	if commitIndex >= 0 && n.logMgr.commit(commitIndex) {
-		writeInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, commitIndex)
+func (n *node) commitTo(targetCommitIndex int) {
+	if targetCommitIndex >= 0 && n.logMgr.commit(targetCommitIndex) {
+		writeInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, n.logMgr.commitIndex)
 	}
 }
 

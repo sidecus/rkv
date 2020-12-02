@@ -21,10 +21,9 @@ func toRaftAERequest(req *pb.AppendEntriesRequest) *raft.AppendEntriesRequest {
 		}
 
 		entries[i] = raft.LogEntry{
-			Index:     int(v.Index),
-			Term:      int(v.Term),
-			Committed: v.Committed,
-			Cmd:       cmd,
+			Index: int(v.Index),
+			Term:  int(v.Term),
+			Cmd:   cmd,
 		}
 	}
 
@@ -51,10 +50,9 @@ func fromRaftAERequest(req *raft.AppendEntriesRequest) *pb.AppendEntriesRequest 
 			},
 		}
 		entry := &pb.LogEntry{
-			Index:     int64(v.Index),
-			Term:      int64(v.Term),
-			Committed: v.Committed,
-			Cmd:       cmd,
+			Index: int64(v.Index),
+			Term:  int64(v.Term),
+			Cmd:   cmd,
 		}
 
 		entries[i] = entry

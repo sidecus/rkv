@@ -2,6 +2,8 @@ package raft
 
 import "github.com/sidecus/raft/pkg/util"
 
+const maxAppendEntriesCount = 5
+
 // StateMachineCmd holds one command to the statemachine
 type StateMachineCmd struct {
 	CmdType int
@@ -16,10 +18,9 @@ type IStateMachine interface {
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
-	Index     int
-	Term      int
-	Committed bool
-	Cmd       StateMachineCmd
+	Index int
+	Term  int
+	Cmd   StateMachineCmd
 }
 
 // logManager contains the array of logs
@@ -54,10 +55,9 @@ func newLogMgr(sm IStateMachine) *logManager {
 // this should be called by leader when accepting client requests
 func (lm *logManager) appendCmd(cmd StateMachineCmd, term int) {
 	entry := LogEntry{
-		Index:     lm.lastIndex + 1,
-		Cmd:       cmd,
-		Term:      term,
-		Committed: false,
+		Index: lm.lastIndex + 1,
+		Cmd:   cmd,
+		Term:  term,
 	}
 	entries := []LogEntry{entry}
 	lm.append(entries)
@@ -106,10 +106,7 @@ func (lm *logManager) commit(targetIndex int) bool {
 		return false // nothing more to commit
 	}
 
-	// Update log entries and set new commit index
-	for i := lm.commitIndex + 1; i <= targetIndex; i++ {
-		lm.logs[i].Committed = true
-	}
+	// Set new commit index
 	lm.commitIndex = targetIndex
 
 	// Apply commands to state machine if needed
@@ -135,12 +132,14 @@ func (lm *logManager) createAERequest(term, leaderID, nextIdx int) *AppendEntrie
 		prevTerm = lm.logs[prevIdx].Term
 	}
 
+	nextNext := util.Min(nextIdx+maxAppendEntriesCount, lm.lastIndex+1)
+
 	req := &AppendEntriesRequest{
 		Term:         term,
 		LeaderID:     leaderID,
 		PrevLogIndex: prevIdx,
 		PrevLogTerm:  prevTerm,
-		Entries:      lm.logs[nextIdx:],
+		Entries:      lm.logs[nextIdx:nextNext],
 		LeaderCommit: lm.commitIndex,
 	}
 

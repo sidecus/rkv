@@ -1,6 +1,10 @@
 package raft
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sidecus/raft/pkg/util"
+)
 
 func TestCreateFollowers(t *testing.T) {
 	size := 5
@@ -60,10 +64,10 @@ func TestUpdateMatchIndex(t *testing.T) {
 	}
 
 	// no match
-	followers[0].nextIndex = 5
+	followers[0].nextIndex = 8
 	followers[0].matchIndex = 3
 	followers.updateMatchIndex(0, false, -2)
-	if followers[0].nextIndex != 4 || followers[0].matchIndex != 3 {
+	if followers[0].nextIndex != util.Max(0, 8-nextIndexFallbackStep) || followers[0].matchIndex != 3 {
 		t.Error("updateMatchIndex doesn't decrease nextIndex correctly upon failed match")
 	}
 

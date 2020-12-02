@@ -35,8 +35,7 @@ message KVCmd {
 message LogEntry {
   int64 index = 1;
   int64 term = 2;
-  bool committed = 3;
-  KVCmd cmd = 4;
+  KVCmd cmd = 3;
 }
 
 // The append entry request

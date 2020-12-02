@@ -1,5 +1,9 @@
 package raft
 
+import "github.com/sidecus/raft/pkg/util"
+
+const nextIndexFallbackStep = 5
+
 // followerIndex manages nextIndex and matchIndex for a follower
 type followerIndex struct {
 	nodeID     int
@@ -50,11 +54,8 @@ func (info followerInfo) updateMatchIndex(nodeID int, match bool, lastMatch int)
 		follower.nextIndex = lastMatch + 1
 		follower.matchIndex = lastMatch
 	} else {
-		// only decrement when it's larger than zero
-		// nextIndex is meaningless when its less than zero
-		if follower.nextIndex > 0 {
-			follower.nextIndex--
-		}
+		// cap nextIndex to 0. It is meaningless when less than zero
+		follower.nextIndex = util.Max(0, follower.nextIndex-nextIndexFallbackStep)
 	}
 }
 

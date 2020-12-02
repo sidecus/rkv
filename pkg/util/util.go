@@ -30,3 +30,11 @@ func Min(a, b int) int {
 	}
 	return b
 }
+
+// Max returns a larger integer out of two
+func Max(a, b int) int {
+	if a >= b {
+		return a
+	}
+	return b
+}

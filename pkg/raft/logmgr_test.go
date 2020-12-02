@@ -213,9 +213,6 @@ func TestCommit(t *testing.T) {
 	if lm.lastApplied != lm.lastIndex || lm.lastApplied != sm.lastApplied {
 		t.Error("commit should apply entries to state machine as appropriate")
 	}
-	if !lm.logs[lm.lastIndex].Committed {
-		t.Error("commit doesn't update entry Committed state correctly")
-	}
 
 	// commit again does nothing
 	ret = lm.commit(5)
