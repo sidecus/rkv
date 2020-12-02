@@ -60,47 +60,57 @@ func (lm *logManager) appendCmd(cmd StateMachineCmd, term int) {
 		Committed: false,
 	}
 	entries := []LogEntry{entry}
-	lm.appendEntries(entries)
+	lm.append(entries)
 }
 
 // appendLogs handles replicated logs from leader
-func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) bool {
+// returns true if we entries matching prevLogIndex/prevLogTerm, and if that's the case, log
+// entries are processed and appended as appropriate
+func (lm *logManager) appendLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool) {
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
-	if !lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm) {
-		return false
+	prevMatch = lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm)
+	if !prevMatch {
+		return
 	}
 
-	if len(entries) > 0 {
-		index := 0
-		for _, v := range entries {
-			index = v.Index
-			if index > lm.lastIndex || v.Term != lm.logs[index].Term {
-				break
-			}
+	num := len(entries)
+
+	if num <= 0 {
+		// nothing to append
+		return
+	}
+
+	start, end := entries[0].Index, entries[0].Index+num
+
+	// Find first non-matching index
+	var index int
+	for index = start; index < end; index++ {
+		if index > lm.lastIndex || entries[index-start].Term != lm.logs[index].Term {
+			break
 		}
-
-		// Drop all entries after the first non-matching and append new ones
-		lm.logs = lm.logs[:index]
-		lm.appendEntries(entries)
 	}
 
-	return true
+	// Drop all entries after the first non-matching and append new ones
+	lm.logs = lm.logs[:index]
+	lm.append(entries[(index - start):])
+
+	return
 }
 
-func (lm *logManager) commit(index int) bool {
+func (lm *logManager) commit(targetIndex int) bool {
 	// cap to lastIndex
-	index = util.Min(index, lm.lastIndex)
+	targetIndex = util.Min(targetIndex, lm.lastIndex)
 
-	if index <= lm.commitIndex {
-		return false // nothing to commit
+	if targetIndex <= lm.commitIndex {
+		return false // nothing more to commit
 	}
 
 	// Update log entries and set new commit index
-	for i := lm.commitIndex + 1; i <= index; i++ {
+	for i := lm.commitIndex + 1; i <= targetIndex; i++ {
 		lm.logs[i].Committed = true
 	}
-	lm.commitIndex = index
+	lm.commitIndex = targetIndex
 
 	// Apply commands to state machine if needed
 	if lm.commitIndex > lm.lastApplied {
@@ -120,7 +130,6 @@ func (lm *logManager) createAERequest(term, leaderID, nextIdx int) *AppendEntrie
 	}
 
 	prevIdx := nextIdx - 1
-
 	prevTerm := -1
 	if prevIdx >= 0 {
 		prevTerm = lm.logs[prevIdx].Term
@@ -173,8 +182,9 @@ func (lm *logManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 	}
 }
 
-// appendEntries appends entries to logs
-func (lm *logManager) appendEntries(entries []LogEntry) {
+// append appends new entries to logs, should only be called internally.
+// Caller should use appendCmd or appendLogs instead
+func (lm *logManager) append(entries []LogEntry) {
 	lm.logs = append(lm.logs, entries...)
 	lm.lastIndex = len(lm.logs) - 1
 	lm.lastTerm = lm.logs[lm.lastIndex].Term

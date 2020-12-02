@@ -54,12 +54,13 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 		return
 	}
 
+	nodeID := reply.NodeID
+
 	// 5.3 update leader indicies.
 	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
 	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
 	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
-	nodeID := reply.NodeID
-	n.followerIndices.update(nodeID, reply.Success, reply.LastMatch)
+	n.followers.updateMatchIndex(nodeID, reply.Success, reply.LastMatch)
 
 	// Check whether there are logs to commit and then replicate
 	n.leaderCommit()
@@ -113,9 +114,8 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 		return
 	}
 
+	// record and count votes
 	n.votes[reply.NodeID] = true
-
-	// count votes
 	total := n.countVotes()
 	if total > n.clusterSize/2 {
 		// we won, set leader status and send heartbeat
@@ -151,11 +151,11 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	if n.nodeState == Leader {
 		n.logMgr.appendCmd(*cmd, n.currentTerm)
 
-		for _, follower := range n.followerIndices {
+		for _, follower := range n.followers {
 			n.replicateLogsTo(follower.nodeID)
 		}
 
-		// TODO[sidecus]: 5.3, 5.4 - wait for response and then commit.
+		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
 		// For now we return eagerly and don't wait for agreement from majority.
 		// Instead commit is done asynchronously after replication.
 

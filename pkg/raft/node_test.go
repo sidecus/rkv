@@ -90,11 +90,11 @@ func TestEnterLeaderState(t *testing.T) {
 	followerIndicies[105] = follower105
 
 	n := &node{
-		nodeID:          100,
-		nodeState:       Candidate,
-		currentTerm:     50,
-		currentLeader:   -1,
-		followerIndices: followerIndicies,
+		nodeID:        100,
+		nodeState:     Candidate,
+		currentTerm:   50,
+		currentLeader: -1,
+		followers:     followerIndicies,
 		logMgr: &logManager{
 			lastIndex: 3,
 		},

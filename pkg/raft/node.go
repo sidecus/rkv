@@ -49,7 +49,7 @@ type node struct {
 	peerMgr       *PeerManager
 
 	// leader only
-	followerIndices followerIndices
+	followers followerInfo
 
 	// candidate only
 	votes map[int]bool
@@ -60,18 +60,18 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 	size := len(peers) + 1
 
 	n := &node{
-		mu:              sync.RWMutex{},
-		clusterSize:     size,
-		nodeID:          nodeID,
-		nodeState:       Follower,
-		currentTerm:     0,
-		currentLeader:   -1,
-		votedFor:        -1,
-		logMgr:          newLogMgr(sm),
-		stateMachine:    sm,
-		peerMgr:         NewPeerManager(peers, proxyFactory),
-		followerIndices: createFollowerIndicies(nodeID, peers),
-		votes:           make(map[int]bool, size),
+		mu:            sync.RWMutex{},
+		clusterSize:   size,
+		nodeID:        nodeID,
+		nodeState:     Follower,
+		currentTerm:   0,
+		currentLeader: -1,
+		votedFor:      -1,
+		logMgr:        newLogMgr(sm),
+		stateMachine:  sm,
+		peerMgr:       NewPeerManager(peers, proxyFactory),
+		followers:     createFollowers(nodeID, peers),
+		votes:         make(map[int]bool, size),
 	}
 
 	return n
@@ -141,8 +141,8 @@ func (n *node) enterLeaderState() {
 	n.nodeState = Leader
 	n.currentLeader = n.nodeID
 
-	// reset leader indicies
-	n.followerIndices.resetAll(n.logMgr.lastIndex)
+	// reset all follower's indicies
+	n.followers.resetAllIndices(n.logMgr.lastIndex)
 
 	writeInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -219,7 +219,7 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 // replicateLogsTo replicate logs to follower as needed
 // This should be only be called by leader
 func (n *node) replicateLogsTo(targetNodeID int) {
-	target := n.followerIndices[targetNodeID]
+	target := n.followers[targetNodeID]
 
 	if target.nextIndex > n.logMgr.lastIndex {
 		// nothing to replicate
@@ -249,7 +249,7 @@ func (n *node) leaderCommit() {
 			continue
 		}
 
-		if n.followerIndices.majorityMatch(i) {
+		if n.followers.majorityMatch(i) {
 			commitIndex = i
 			break
 		}
