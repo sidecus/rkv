@@ -4,6 +4,19 @@ import (
 	"testing"
 )
 
+type testStateMachine struct {
+	lastApplied int
+}
+
+func (sm *testStateMachine) Apply(cmd StateMachineCmd) {
+	data := cmd.Data.(int)
+	sm.lastApplied = data
+}
+
+func (sm *testStateMachine) Get(param ...interface{}) (result interface{}, err error) {
+	return param[0], nil
+}
+
 func TestProcessCmd(t *testing.T) {
 	lm := NewLogMgr(&testStateMachine{}).(*LogManager)
 	cmd := StateMachineCmd{}
@@ -206,19 +219,6 @@ func TestAppendLogs(t *testing.T) {
 	if lm.LastIndex() != 6 || lm.lastTerm != 20 || len(lm.logs) != 7 {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on non empty input")
 	}
-}
-
-type testStateMachine struct {
-	lastApplied int
-}
-
-func (sm *testStateMachine) Apply(cmd StateMachineCmd) {
-	data := cmd.Data.(int)
-	sm.lastApplied = data
-}
-
-func (sm *testStateMachine) Get(param ...interface{}) (result interface{}, err error) {
-	return 0, nil
 }
 
 func generateTestEntries(prevIndex, newTerm int) []LogEntry {

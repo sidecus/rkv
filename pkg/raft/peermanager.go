@@ -35,6 +35,16 @@ type Peer struct {
 	proxy IPeerProxy
 }
 
+// IPeerManager defines the interface for raft peer management
+type IPeerManager interface {
+	AppendEntries(nodeID int, req *AppendEntriesRequest, callback func(*AppendEntriesReply))
+	BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
+	RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply))
+	BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
+	Get(nodeID int, req *GetRequest) (*GetReply, error)
+	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
+}
+
 // PeerManager manages communication with peers
 type PeerManager struct {
 	Peers map[int]Peer
@@ -44,7 +54,7 @@ var errorNoPeersProvided = errors.New("No raft peers provided")
 var errorInvalidNodeID = errors.New("Invalid node id")
 
 // NewPeerManager creates the node proxy for kv store
-func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) *PeerManager {
+func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) IPeerManager {
 	if len(peers) == 0 {
 		util.Panicln(errorNoPeersProvided)
 	}

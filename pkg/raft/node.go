@@ -47,13 +47,16 @@ type node struct {
 	currentLeader int
 	votedFor      int // resets on term change
 	logMgr        ILogManager
-	peerMgr       *PeerManager
+	peerMgr       IPeerManager
 
 	// leader only
 	followers followerInfo
 
 	// candidate only
 	votes map[int]bool
+
+	// timer
+	timer IRaftTimer
 }
 
 // NewNode creates a new node
@@ -73,6 +76,8 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		followers:     createFollowers(nodeID, peers),
 		votes:         make(map[int]bool, size),
 	}
+
+	n.timer = newRaftTimer(n)
 
 	return n
 }
@@ -97,17 +102,11 @@ func (n *node) Start() {
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
 	n.enterFollowerState(n.nodeID, 0)
-	startRaftTimer(n)
+	n.timer.Start()
 }
 
 func (n *node) Stop() {
-	// We don't wait for the goroutine to finish, just no need
-	stopRaftTimer()
-}
-
-// Refreshes timer based on current state
-func (n *node) refreshTimer() {
-	refreshRaftTimer(n.nodeState)
+	n.timer.Stop()
 }
 
 // enter follower state and follows new leader (or potential leader)
@@ -204,7 +203,7 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 		// has better knowledge of the leader than us
 		follow = true
 	} else if newTerm == n.currentTerm && isAppendEntries {
-		// For AE calls, we should follow as well
+		// For AE calls, we should follow even term is the same
 		follow = true
 	}
 
@@ -213,7 +212,7 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 		n.refreshTimer()
 	}
 
-	return false
+	return follow
 }
 
 // replicateLogsTo replicate logs to follower as needed
@@ -246,10 +245,17 @@ func (n *node) leaderCommit() {
 	commitIndex := n.logMgr.CommitIndex()
 	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
 		entry := n.logMgr.GetLogEntry(i)
-		if entry.Term != n.currentTerm {
+
+		if entry.Term < n.currentTerm {
+			// 5.4.2 Raft doesn't allow committing of previous terms
+			// A leader shall only commit entries added by itself, and term is the indication of ownership
+			break
+		} else if entry.Term > n.currentTerm {
+			// This will never happen, adding for safety purpose
 			continue
 		}
 
+		// If we reach here, we can safely declare sole ownership of the ith entry
 		if n.followers.majorityMatch(i) {
 			commitIndex = i
 			break
@@ -276,4 +282,9 @@ func (n *node) countVotes() int {
 	}
 
 	return total
+}
+
+// Refreshes timer based on current state
+func (n *node) refreshTimer() {
+	n.timer.Refresh(n.nodeState)
 }
