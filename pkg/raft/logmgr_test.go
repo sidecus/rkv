@@ -129,7 +129,7 @@ func TestProcessLogs(t *testing.T) {
 		t.Error("appendLogs should return true by skiping non matching entries")
 	}
 	if lm.LastIndex() != 4 || lm.lastTerm != 10 || len(lm.logs) != lm.LastIndex()+1 {
-		t.Error("appendLogs append all new good entries")
+		t.Error("appendLogs should append all new good entries")
 	}
 
 	// empty logs scenario
@@ -140,7 +140,7 @@ func TestProcessLogs(t *testing.T) {
 		t.Error("appendLogs should append new entries when it's empty")
 	}
 	if lm.LastIndex() != 1 || lm.lastTerm != 10 || len(lm.logs) != lm.LastIndex()+1 {
-		t.Error("appendLogs append all new good entries when it's empty")
+		t.Error("appendLogs should append all new good entries when it's empty")
 	}
 }
 
@@ -218,6 +218,46 @@ func TestAppendLogs(t *testing.T) {
 	lm.appendLogs(entries)
 	if lm.LastIndex() != 6 || lm.lastTerm != 20 || len(lm.logs) != 7 {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on non empty input")
+	}
+}
+
+func TestFindFirstConflictingEntryIndex(t *testing.T) {
+	lm := &LogManager{
+		logs:      make([]LogEntry, 5),
+		lastIndex: 4,
+	}
+	lm.logs[0] = LogEntry{Index: 0, Term: 1}
+	lm.logs[1] = LogEntry{Index: 1, Term: 2}
+	lm.logs[2] = LogEntry{Index: 2, Term: 3}
+	lm.logs[3] = LogEntry{Index: 3, Term: 4}
+	lm.logs[4] = LogEntry{Index: 4, Term: 5}
+
+	// no conflict and all are new entries
+	e := generateTestEntries(4, 5)
+	ret := lm.findFirstConflictingEntryIndex(e)
+	if ret != e[0].Index || ret != lm.lastIndex+1 {
+		t.Error("findFirstConflictingEntryIndex wrong index returned when all incoming data are new and no conflict")
+	}
+
+	// one conflicting entries
+	e = generateTestEntries(3, 6)
+	ret = lm.findFirstConflictingEntryIndex(e)
+	if ret != 4 {
+		t.Error("findFirstConflictingEntryIndex returns wrong index when there is one conflicting entry")
+	}
+
+	// all entries conflict
+	e = generateTestEntries(2, 6)
+	ret = lm.findFirstConflictingEntryIndex(e)
+	if ret != e[0].Index {
+		t.Error("findFirstConflictingEntryIndex returns wrong index when all entries conflict")
+	}
+
+	// all match (duplicate), should return lm.lastIndex + 1
+	e = lm.logs[3:]
+	ret = lm.findFirstConflictingEntryIndex(e)
+	if ret != lm.lastIndex+1 {
+		t.Error("findFirstConflictingEntryIndex returns wrong index when all entries conflict")
 	}
 }
 

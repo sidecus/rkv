@@ -118,52 +118,38 @@ func (lm *LogManager) ProcessCmd(cmd StateMachineCmd, term int) {
 
 // ProcessLogs handles replicated logs from leader
 // returns true if we entries matching prevLogIndex/prevLogTerm, and if that's the case, log
-// entries are processed and appended as appropriate
-func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool) {
+// entries are processed and appended as appropriate. Otherwise return false
+func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) bool {
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
-	prevMatch = lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm)
+	prevMatch := lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm)
 	if !prevMatch {
-		return
+		return false
 	}
 
-	num := len(entries)
-
-	if num <= 0 {
-		// nothing to append
-		return
+	if len(entries) > 0 {
+		// Find first non matching entry's index, and drop local logs starting from that position,
+		// then append from incoming entries starting from that position
+		firstConflictIdx := lm.findFirstConflictingEntryIndex(entries)
+		lm.logs = lm.logs[:firstConflictIdx]
+		toAppend := entries[(firstConflictIdx - entries[0].Index):]
+		lm.appendLogs(toAppend)
 	}
 
-	start, end := entries[0].Index, entries[0].Index+num
-
-	// Find first non-matching index
-	var index int
-	for index = start; index < end; index++ {
-		if index > lm.lastIndex || entries[index-start].Term != lm.logs[index].Term {
-			break
-		}
-	}
-
-	// Drop all entries after the first non-matching and append new ones
-	lm.logs = lm.logs[:index]
-	lm.appendLogs(entries[(index - start):])
-
-	return
+	return true
 }
 
 // Commit tries to logs up to the target index
+// returns true if anything is committed
 func (lm *LogManager) Commit(targetIndex int) bool {
 	// cap to lastIndex
 	targetIndex = util.Min(targetIndex, lm.lastIndex)
-
 	if targetIndex <= lm.commitIndex {
 		return false // nothing more to commit
 	}
 
-	// Set new commit index
+	// Set new commit index and apply commands to state machine if needed
 	lm.commitIndex = targetIndex
-
-	// Apply commands to state machine if needed
 	if lm.commitIndex > lm.lastApplied {
 		for i := lm.lastApplied + 1; i <= lm.commitIndex; i++ {
 			lm.statemachine.Apply(lm.logs[i].Cmd)
@@ -203,8 +189,7 @@ func (lm *LogManager) CreateAERequest(term, leaderID, nextIdx int) *AppendEntrie
 // check to see whether we have a matching entry @prevLogIndex with prevLogTerm
 func (lm *LogManager) hasMatchingPrevEntry(prevLogIndex, prevLogTerm int) bool {
 	if prevLogIndex == -1 && prevLogTerm == -1 {
-		// empty logs after init, agree
-		return true
+		return true // empty logs after init
 	}
 
 	if prevLogIndex > lm.lastIndex {
@@ -241,4 +226,25 @@ func (lm *LogManager) appendLogs(entries []LogEntry) {
 	lm.logs = append(lm.logs, entries...)
 	lm.lastIndex = len(lm.logs) - 1
 	lm.lastTerm = lm.logs[lm.lastIndex].Term
+}
+
+// findFirstConflictingEntryIndex finds the first entry's index by comparing incoming entries with local logs
+// if there is such an entry, its index is returned
+// if all entries match, current log's lastIndex + 1 is returned
+func (lm *LogManager) findFirstConflictingEntryIndex(entries []LogEntry) int {
+	if len(entries) == 0 {
+		util.Panicf("Cannot find first non-matching on empty input")
+	}
+
+	start, end := entries[0].Index, entries[0].Index+len(entries)
+
+	// Find first non-matching index
+	index := start
+	for index = start; index < end; index++ {
+		if index > lm.lastIndex || entries[index-start].Term != lm.logs[index].Term {
+			break
+		}
+	}
+
+	return index
 }

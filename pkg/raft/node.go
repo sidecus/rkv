@@ -184,11 +184,7 @@ func (n *node) sendHeartbeat() {
 	util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastAppendEntries(
-		req,
-		func(reply *AppendEntriesReply) {
-			n.handleAppendEntriesReply(reply)
-		})
+	n.peerMgr.BroadcastAppendEntries(req, n.handleAppendEntriesReply)
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
@@ -229,14 +225,9 @@ func (n *node) replicateLogsTo(targetNodeID int) {
 	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, target.nextIndex)
 	minIdx := req.Entries[0].Index
 	maxIdx := req.Entries[len(req.Entries)-1].Index
-	util.WriteInfo("T%d: Node%d replicating logs to Node%d (log#%d-log#%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+	util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
-	n.peerMgr.AppendEntries(
-		target.nodeID,
-		req,
-		func(reply *AppendEntriesReply) {
-			n.handleAppendEntriesReply(reply)
-		})
+	n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
 }
 
 // leaderCommit commits logs as needed by checking each follower's match index
@@ -268,7 +259,7 @@ func (n *node) leaderCommit() {
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
 	if targetCommitIndex >= 0 && n.logMgr.Commit(targetCommitIndex) {
-		util.WriteInfo("T%d: Node%d committed to log%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
+		util.WriteInfo("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 	}
 }
 
@@ -280,7 +271,6 @@ func (n *node) wonMajorityVotes() bool {
 			total++
 		}
 	}
-
 	return total > n.clusterSize/2
 }
 
