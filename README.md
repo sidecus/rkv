@@ -38,15 +38,15 @@ rkv.exe -nodeid 1 -addresses localhost:27015,localhost:27016,localhost:27017
 ```PowerShell
 rkv.exe -nodeid 2 -addresses localhost:27015,localhost:27016,localhost:27017
 ```
-### Run client
+### Run client against any nodes for set/get/del
 ```PowerShell
-rkvclient.exe set -address localhost:27016 -key 0 -value v0
+rkvclient.exe set -address localhost:27015 -key 0 -value v0
 rkvclient.exe set -address localhost:27016 -key 1 -value v1
-rkvclient.exe set -address localhost:27016 -key 0 -value v2
+rkvclient.exe set -address localhost:27016 -key 2 -value v2
 rkvclient.exe get -address localhost:27016 -key 0
-rkvclient.exe get -address localhost:27017 -key 0
+rkvclient.exe get -address localhost:27017 -key 1
+rkvclient.exe del -address localhost:27015 -key 2
 ```
-Try to kill any server, run client query again.
-Watch the logs and enjoy.
+Try to kill any server, and run more client cmds. Watch the logs. Enjoy!
 
 ## Happy coding. Peace.

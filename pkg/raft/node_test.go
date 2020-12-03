@@ -257,3 +257,20 @@ func TestReplicateLogsTo(t *testing.T) {
 		t.Error("replicated entries contain bad entries")
 	}
 }
+
+func TestWonMajorityVotes(t *testing.T) {
+	n := &node{}
+	n.clusterSize = 3
+	n.votes = make(map[int]bool)
+
+	n.votes[0] = true
+	if n.wonMajorityVotes() {
+		t.Error("wonMajorityVotes should return false on 1 vote out of 3")
+	}
+
+	n.votes[2] = true
+	if !n.wonMajorityVotes() {
+		t.Error("wonMajorityVotes should return true on 2 votes out of 3")
+	}
+
+}

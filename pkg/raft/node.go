@@ -272,8 +272,8 @@ func (n *node) commitTo(targetCommitIndex int) {
 	}
 }
 
-// count votes for current node and term
-func (n *node) countVotes() int {
+// count votes for current node and term and return true if we won
+func (n *node) wonMajorityVotes() bool {
 	total := 0
 	for _, v := range n.votes {
 		if v {
@@ -281,7 +281,7 @@ func (n *node) countVotes() int {
 		}
 	}
 
-	return total
+	return total > n.clusterSize/2
 }
 
 // Refreshes timer based on current state

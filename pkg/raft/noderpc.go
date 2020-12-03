@@ -111,18 +111,14 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 		return
 	}
 
-	if reply.VotedTerm != n.currentTerm ||
-		n.nodeState != Candidate ||
-		!reply.VoteGranted {
+	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
 		// stale vote or denied, ignore
 		return
 	}
 
 	// record and count votes
 	n.votes[reply.NodeID] = true
-	total := n.countVotes()
-	if total > n.clusterSize/2 {
-		// we won, set leader status and send heartbeat
+	if n.wonMajorityVotes() {
 		n.enterLeaderState()
 		n.sendHeartbeat()
 	}
@@ -133,9 +129,9 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	ret, err := n.logMgr.Get(req.Params...)
-
 	var result *GetReply = nil
+
+	ret, err := n.logMgr.Get(req.Params...)
 	if err == nil {
 		result = &GetReply{
 			NodeID: n.nodeID,
