@@ -48,7 +48,7 @@ func get(ctx context.Context, client pb.KVStoreRaftClient, req *pb.GetRequest) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Get Success: %v, Value: %s", reply.NodeID, reply.Success, reply.Value)
+	fmt.Printf("Node%d - Get Success: %v, Value: %s\n", reply.NodeID, reply.Success, reply.Value)
 }
 
 func set(ctx context.Context, client pb.KVStoreRaftClient, req *pb.SetRequest) {
@@ -57,7 +57,7 @@ func set(ctx context.Context, client pb.KVStoreRaftClient, req *pb.SetRequest) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Set Success: %v", reply.NodeID, reply.Success)
+	fmt.Printf("Node%d - Set Success: %v\n", reply.NodeID, reply.Success)
 }
 
 func delete(ctx context.Context, client pb.KVStoreRaftClient, req *pb.DeleteRequest) {
@@ -66,7 +66,7 @@ func delete(ctx context.Context, client pb.KVStoreRaftClient, req *pb.DeleteRequ
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Delete Success: %v", reply.NodeID, reply.Success)
+	fmt.Printf("Node%d - Delete Success: %v\n", reply.NodeID, reply.Success)
 }
 
 func parseArgs() (mode, address, key, value string) {

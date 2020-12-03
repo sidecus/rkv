@@ -18,5 +18,5 @@
 
 # other files to ignore
 /cmd/rkv/rkv
-/cmd/rkv/rkvclient
+/cmd/rkvclient/rkvclient
 *_debug_bin
