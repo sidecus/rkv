@@ -234,30 +234,44 @@ func TestFindFirstConflictingEntryIndex(t *testing.T) {
 
 	// no conflict and all are new entries
 	e := generateTestEntries(4, 5)
-	ret := lm.findFirstConflictingEntryIndex(e)
+	ret := lm.findFirstConflictIndex(4, e)
 	if ret != e[0].Index || ret != lm.lastIndex+1 {
 		t.Error("findFirstConflictingEntryIndex wrong index returned when all incoming data are new and no conflict")
 	}
 
 	// one conflicting entries
 	e = generateTestEntries(3, 6)
-	ret = lm.findFirstConflictingEntryIndex(e)
+	ret = lm.findFirstConflictIndex(3, e)
 	if ret != 4 {
 		t.Error("findFirstConflictingEntryIndex returns wrong index when there is one conflicting entry")
 	}
 
 	// all entries conflict
 	e = generateTestEntries(2, 6)
-	ret = lm.findFirstConflictingEntryIndex(e)
+	ret = lm.findFirstConflictIndex(2, e)
 	if ret != e[0].Index {
 		t.Error("findFirstConflictingEntryIndex returns wrong index when all entries conflict")
 	}
 
 	// all match (duplicate), should return lm.lastIndex + 1
 	e = lm.logs[3:]
-	ret = lm.findFirstConflictingEntryIndex(e)
+	ret = lm.findFirstConflictIndex(2, e)
 	if ret != lm.lastIndex+1 {
-		t.Error("findFirstConflictingEntryIndex returns wrong index when all entries conflict")
+		t.Error("findFirstConflictingEntryIndex returns wrong index when all entries match")
+	}
+
+	// empty entries with matching prev index
+	e = []LogEntry{}
+	ret = lm.findFirstConflictIndex(3, e)
+	if ret != 4 {
+		t.Error("findFirstConflictingEntryIndex returns wrong index upon heartbeat")
+	}
+
+	// empty entries with non matching prev index (-1)
+	e = []LogEntry{}
+	ret = lm.findFirstConflictIndex(-1, e)
+	if ret != 0 {
+		t.Error("findFirstConflictingEntryIndex returns wrong index upon heartbeat")
 	}
 }
 

@@ -15,13 +15,13 @@ import (
 // RPCServer is used to implement pb.KVStoreRPCServer
 type RPCServer struct {
 	wg     sync.WaitGroup
-	node   raft.INode
+	node   raft.INodeRPCProvider
 	server *grpc.Server
 	pb.UnimplementedKVStoreRaftServer
 }
 
 // NewServer creates a new RPC server
-func NewServer(node raft.INode) *RPCServer {
+func NewServer(node raft.INodeRPCProvider) *RPCServer {
 	return &RPCServer{
 		node: node,
 	}

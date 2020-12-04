@@ -127,14 +127,14 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 		return false
 	}
 
-	if len(entries) > 0 {
-		// Find first non matching entry's index, and drop local logs starting from that position,
-		// then append from incoming entries starting from that position
-		firstConflictIdx := lm.findFirstConflictingEntryIndex(entries)
-		lm.logs = lm.logs[:firstConflictIdx]
-		toAppend := entries[(firstConflictIdx - entries[0].Index):]
-		lm.appendLogs(toAppend)
-	}
+	// Find first non matching entry's index, and drop local logs starting from that position,
+	// then append from incoming entries starting from that position
+	truncIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
+	toAppend := entries[truncIndex-(prevLogIndex+1):]
+
+	// Truncate logs and then call appendLogs, which will adjust lastIndex accordingly
+	lm.logs = lm.logs[:truncIndex]
+	lm.appendLogs(toAppend)
 
 	return true
 }
@@ -150,11 +150,11 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 
 	// Set new commit index and apply commands to state machine if needed
 	lm.commitIndex = targetIndex
-	if lm.commitIndex > lm.lastApplied {
-		for i := lm.lastApplied + 1; i <= lm.commitIndex; i++ {
+	if targetIndex > lm.lastApplied {
+		for i := lm.lastApplied + 1; i <= targetIndex; i++ {
 			lm.statemachine.Apply(lm.logs[i].Cmd)
 		}
-		lm.lastApplied = lm.commitIndex
+		lm.lastApplied = targetIndex
 	}
 
 	return true
@@ -213,10 +213,15 @@ func (lm *LogManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 		util.Panicf("prevLogIndex %d or prevLogTerm %d is -1 but the other is not\n", prevLogIndex, prevLogTerm)
 	}
 
+	term := lm.lastTerm
 	for i, v := range entries {
 		if v.Index != prevLogIndex+1+i {
-			util.Panicf("new entries index %d (%dth entry) doesn't match prevLogIndex %d\n", v.Index, i, prevLogIndex)
+			util.Panicf("new entry's index (%dth) is not continuous after match prevLogIndex %d\n", v.Index, prevLogIndex)
 		}
+		if v.Term < term {
+			util.Panicf("new entry (index %d) has invalid term d\n", v.Index)
+		}
+		term = v.Term
 	}
 }
 
@@ -225,18 +230,21 @@ func (lm *LogManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 func (lm *LogManager) appendLogs(entries []LogEntry) {
 	lm.logs = append(lm.logs, entries...)
 	lm.lastIndex = len(lm.logs) - 1
-	lm.lastTerm = lm.logs[lm.lastIndex].Term
+	if lm.lastIndex == -1 {
+		lm.lastTerm = -1
+	} else {
+		lm.lastTerm = lm.logs[lm.lastIndex].Term
+	}
 }
 
-// findFirstConflictingEntryIndex finds the first entry's index by comparing incoming entries with local logs
-// if there is such an entry, its index is returned
-// if all entries match, current log's lastIndex + 1 is returned
-func (lm *LogManager) findFirstConflictingEntryIndex(entries []LogEntry) int {
-	if len(entries) == 0 {
-		util.Panicf("Cannot find first non-matching on empty input")
-	}
-
-	start, end := entries[0].Index, entries[0].Index+len(entries)
+// findFirstConflictIndex finds the first conflicting entry by comparing incoming entries with local log entries
+// If incoming entries is empty, prevLogIndex+1 will be returned
+// if there is such a conflicting entry, its index is returned
+// if everything matches, min(lastLogIndex+1, last entries index+1) is returned
+// The last scenario likely will never happen because in that case prevLogIndex should be bigger
+func (lm *LogManager) findFirstConflictIndex(prevLogIndex int, entries []LogEntry) int {
+	start := prevLogIndex + 1
+	end := start + len(entries)
 
 	// Find first non-matching index
 	index := start
