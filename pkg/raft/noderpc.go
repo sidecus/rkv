@@ -20,13 +20,13 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 
 	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
 
-	lastMatch, success := -1, false
+	lastMatchIndex, prevMatch := -1, false
 	if req.Term >= n.currentTerm {
 		// only process logs when term is valid
-		success = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
-		if success {
+		prevMatch = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		if prevMatch {
 			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
-			lastMatch = n.logMgr.LastIndex()
+			lastMatchIndex = n.logMgr.LastIndex()
 			n.commitTo(req.LeaderCommit)
 		}
 	}
@@ -35,8 +35,8 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 		Term:      n.currentTerm,
 		NodeID:    n.nodeID,
 		LeaderID:  n.currentLeader,
-		Success:   success,
-		LastMatch: lastMatch, // this is only meaningful when Success is true
+		Success:   prevMatch,
+		LastMatch: lastMatchIndex, // this is only meaningful when Success is true
 	}, nil
 }
 
@@ -76,16 +76,14 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// Here is what the paper says:
+	// Here is what the paper says (5.2 and 5.4):
 	// 1. if req.Term > currentTerm, convert to follower state (reset votedFor)
 	// 2. if req.Term < currentTerm deny vote
-	// 3. if req.Term >= currentTerm:
-	//   a. if votedFor is null or candidateId, and logs are up to date, grant vote
+	// 3. if req.Term >= currentTerm, and if votedFor is null or candidateId, and logs are up to date, grant vote
 	// The req.Term == currentTerm situation AFAIK can only happen when we receive a duplicate RV request
 	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
 	voteGranted := false
 	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
-		// 5.2&5.4 - vote only when candidate's log is at least up to date with current node
 		if req.LastLogIndex >= n.logMgr.LastIndex() && req.LastLogTerm >= n.logMgr.LastTerm() {
 			n.votedFor = req.CandidateID
 			voteGranted = true

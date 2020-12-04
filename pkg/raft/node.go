@@ -18,20 +18,31 @@ const (
 	Leader = 3
 )
 
-// INode represents one raft node
-type INode interface {
+// INodeLifeCycleProvider defines node lifecycle methods
+type INodeLifeCycleProvider interface {
+	Start()
+	Stop()
+}
+
+// INodeRPCProvider defines node functions used by RPC
+// These are invoked when an RPC request is received
+type INodeRPCProvider interface {
 	// Raft
 	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
 	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
-	OnTimer()
 
 	// Data related
 	Get(*GetRequest) (*GetReply, error)
 	Execute(*StateMachineCmd) (*ExecuteReply, error)
+}
+
+// INode represents one raft node
+type INode interface {
+	// RPC
+	INodeRPCProvider
 
 	// Lifecycle
-	Start()
-	Stop()
+	INodeLifeCycleProvider
 }
 
 // node A raft node
@@ -77,7 +88,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		votes:         make(map[int]bool, size),
 	}
 
-	n.timer = newRaftTimer(n)
+	n.timer = NewRaftTimer(n.OnTimer)
 
 	return n
 }
@@ -258,7 +269,7 @@ func (n *node) leaderCommit() {
 
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
-	if targetCommitIndex >= 0 && n.logMgr.Commit(targetCommitIndex) {
+	if n.logMgr.Commit(targetCommitIndex) {
 		util.WriteInfo("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 	}
 }
