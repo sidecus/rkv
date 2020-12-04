@@ -1,4 +1,4 @@
-# raft
+# rkv
 Reinventing the wheel - raft based KV store using Go & gRPC (protobuf)
 
 ## Intro
