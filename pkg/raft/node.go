@@ -92,7 +92,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		votes:         make(map[int]bool, size),
 	}
 
-	n.timer = NewRaftTimer(n.OnTimer)
+	n.timer = NewRaftTimer(n.onTimer)
 
 	return n
 }
@@ -112,17 +112,61 @@ func (n *node) Stop() {
 	n.timer.Stop()
 }
 
-// OnTimer handles a timer event.
-// Action is based on node's current state
-func (n *node) OnTimer() {
+// AppendEntries handles raft RPC AE calls
+func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.nodeState == Follower || n.nodeState == Candidate {
-		n.startElection()
-	} else if n.nodeState == Leader {
-		n.sendHeartbeat()
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
+
+	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
+
+	lastMatchIndex, prevMatch := -1, false
+	if req.Term >= n.currentTerm {
+		// only process logs when term is valid
+		prevMatch = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		if prevMatch {
+			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
+			lastMatchIndex = n.logMgr.LastIndex()
+			n.commitTo(req.LeaderCommit)
+		}
 	}
+
+	return &AppendEntriesReply{
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   prevMatch,
+		LastMatch: lastMatchIndex, // this is only meaningful when Success is true
+	}, nil
+}
+
+// RequestVote handles raft RPC RV calls
+func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Here is what the paper says (5.2 and 5.4):
+	// 1. if req.Term > currentTerm, convert to follower state (reset votedFor)
+	// 2. if req.Term < currentTerm deny vote
+	// 3. if req.Term >= currentTerm, and if votedFor is null or candidateId, and logs are up to date, grant vote
+	// The req.Term == currentTerm situation AFAIK can only happen when we receive a duplicate RV request
+	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
+	voteGranted := false
+	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
+		if req.LastLogIndex >= n.logMgr.LastIndex() && req.LastLogTerm >= n.logMgr.LastTerm() {
+			n.votedFor = req.CandidateID
+			voteGranted = true
+			util.WriteInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
+		}
+	}
+
+	return &RequestVoteReply{
+		Term:        n.currentTerm,
+		NodeID:      n.nodeID,
+		VotedTerm:   req.Term,
+		VoteGranted: voteGranted,
+	}, nil
 }
 
 // Get gets values from state machine, no need to proxy
@@ -153,15 +197,14 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	success := false
 
 	if n.nodeState == Leader {
+		// Process the command, then replicate to followers
+		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
+		// For now we return eagerly and don't wait for follower's response synchronously
+		// Instead commit is done asynchronously after replication (upon AE replies).
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-
 		for _, follower := range n.followers {
 			n.replicateLogsTo(follower.nodeID)
 		}
-
-		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
-		// For now we return eagerly and don't wait for majority based commit.
-		// Instead commit is done asynchronously after replication (upon AE replies).
 		success = true
 	}
 
@@ -176,6 +219,20 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	// proxy to leader instead, no lock needed
 	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
 	return n.peerMgr.Execute(leader, cmd)
+}
+
+// onTimer handles a timer event.
+// Action is based on node's current state.
+// This is run on the timer goroutine so we need lock
+func (n *node) onTimer() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.nodeState == Follower || n.nodeState == Candidate {
+		n.startElection()
+	} else if n.nodeState == Leader {
+		n.sendHeartbeat()
+	}
 }
 
 // Check peer's term and follow if needed. This will be called upon all RPC request and responses.

@@ -28,24 +28,17 @@ type LogEntry struct {
 	Cmd   StateMachineCmd
 }
 
-// IAERequestCreator defines an interface to create AppendEntries request
-type IAERequestCreator interface {
-	CreateAERequest(term, leaderID, nextIdx int) *AppendEntriesRequest
-}
-
 // ILogManager defines the interface for log manager
 type ILogManager interface {
 	LastIndex() int
 	LastTerm() int
 	CommitIndex() int
 	GetLogEntry(index int) LogEntry
+	GetLogEntries(start int, count int) (entries []LogEntry, prevIndex int, prevTerm int)
 
 	ProcessCmd(cmd StateMachineCmd, term int)
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
 	Commit(targetIndex int) bool
-
-	// AppendEntries request creator
-	IAERequestCreator
 
 	// proxy to state machine
 	IValueGetter
@@ -99,6 +92,32 @@ func (lm *LogManager) GetLogEntry(index int) LogEntry {
 	return lm.logs[index]
 }
 
+// GetLogEntries returns entries starting from startIndex (log index, not slice index)
+// Number of elements returned will be count if there is enough, or whatever is available after startIndex
+// If logs is empty and startIndex is 0, empty is returned.
+// If count is 0, empty is returned.
+// It also returns the prevIndex/prevTerm
+func (lm *LogManager) GetLogEntries(startIndex int, count int) (entries []LogEntry, prevIndex int, prevTerm int) {
+	if startIndex < 0 || startIndex > lm.LastIndex()+1 {
+		util.Panicf("start %d shall never be less than zero or larger than lastLogIndex(%d) + 1\n", startIndex, lm.LastIndex()+1)
+	}
+
+	if count < 0 {
+		util.Panicf("count should be greater than or equal to 0")
+	}
+
+	prevIndex = startIndex - 1
+	prevTerm = -1
+	if prevIndex >= 0 {
+		prevTerm = lm.GetLogEntry(prevIndex).Term
+	}
+
+	endIndex := util.Min(startIndex+count, lm.LastIndex()+1)
+	entries = lm.logs[startIndex:endIndex]
+
+	return
+}
+
 // Get gets values from the underneath statemachine
 func (lm *LogManager) Get(param ...interface{}) (interface{}, error) {
 	return lm.statemachine.Get(param...)
@@ -129,11 +148,11 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 
 	// Find first non matching entry's index, and drop local logs starting from that position,
 	// then append from incoming entries starting from that position
-	truncIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
-	toAppend := entries[truncIndex-(prevLogIndex+1):]
+	conflictIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
+	toAppend := entries[conflictIndex-(prevLogIndex+1):]
 
 	// Truncate logs and then call appendLogs, which will adjust lastIndex accordingly
-	lm.logs = lm.logs[:truncIndex]
+	lm.logs, _, _ = lm.GetLogEntries(0, conflictIndex)
 	lm.appendLogs(toAppend)
 
 	return true
@@ -158,32 +177,6 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 	}
 
 	return true
-}
-
-// CreateAERequest creates an AppendEntriesRequest with proper log payload
-func (lm *LogManager) CreateAERequest(term, leaderID, nextIdx int) *AppendEntriesRequest {
-	if nextIdx < 0 || nextIdx > lm.lastIndex+1 {
-		util.Panicf("nextIdx %d shall never be less than zero or larger than lastLogIndex(%d) + 1\n", nextIdx, lm.lastIndex+1)
-	}
-
-	prevIdx := nextIdx - 1
-	prevTerm := -1
-	if prevIdx >= 0 {
-		prevTerm = lm.GetLogEntry(prevIdx).Term
-	}
-
-	nextNext := util.Min(nextIdx+maxAppendEntriesCount, lm.lastIndex+1)
-
-	req := &AppendEntriesRequest{
-		Term:         term,
-		LeaderID:     leaderID,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-		Entries:      lm.logs[nextIdx:nextNext],
-		LeaderCommit: lm.commitIndex,
-	}
-
-	return req
 }
 
 // check to see whether we have a matching entry @prevLogIndex with prevLogTerm

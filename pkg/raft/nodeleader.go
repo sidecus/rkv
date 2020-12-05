@@ -19,7 +19,7 @@ func (n *node) sendHeartbeat() {
 	// TODO[sidecus]: shall we use lastindex+1 all the time for heartbeat?
 	// This can cause unnecessary nextIndex decrement.
 	// We might want to send different heratbeat based on nextIndex of different node
-	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, n.logMgr.LastIndex()+1)
+	req := n.createAERequest(n.logMgr.LastIndex()+1, 0)
 	util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
 
 	// send heart beat (on different goroutines), response will be processed there
@@ -27,6 +27,25 @@ func (n *node) sendHeartbeat() {
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
+}
+
+// replicateLogsTo replicate logs to follower as needed
+// This should be only be called by leader
+func (n *node) replicateLogsTo(targetNodeID int) {
+	target := n.followers[targetNodeID]
+
+	if target.nextIndex > n.logMgr.LastIndex() {
+		// nothing to replicate
+		return
+	}
+
+	// there are logs to replicate, create AE request and send
+	req := n.createAERequest(target.nextIndex, maxAppendEntriesCount)
+	minIdx := req.Entries[0].Index
+	maxIdx := req.Entries[len(req.Entries)-1].Index
+	util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+
+	n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
 }
 
 // handleAppendEntriesReply handles append entries reply. Need locking since this will be
@@ -60,25 +79,6 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	n.replicateLogsTo(nodeID)
 }
 
-// replicateLogsTo replicate logs to follower as needed
-// This should be only be called by leader
-func (n *node) replicateLogsTo(targetNodeID int) {
-	target := n.followers[targetNodeID]
-
-	if target.nextIndex > n.logMgr.LastIndex() {
-		// nothing to replicate
-		return
-	}
-
-	// there are logs to replicate, create AE request and send
-	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, target.nextIndex)
-	minIdx := req.Entries[0].Index
-	maxIdx := req.Entries[len(req.Entries)-1].Index
-	util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
-
-	n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
-}
-
 // leaderCommit commits logs as needed by checking each follower's match index
 // This should only be called by leader
 func (n *node) leaderCommit() {
@@ -103,4 +103,20 @@ func (n *node) leaderCommit() {
 	}
 
 	n.commitTo(commitIndex)
+}
+
+// createAERequest creates an AppendEntriesRequest with proper log payload
+func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
+	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, count)
+
+	req := &AppendEntriesRequest{
+		Term:         n.currentTerm,
+		LeaderID:     n.nodeID,
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		Entries:      entris,
+		LeaderCommit: n.logMgr.CommitIndex(),
+	}
+
+	return req
 }
