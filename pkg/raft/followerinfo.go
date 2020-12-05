@@ -54,7 +54,8 @@ func (info followerInfo) updateMatchIndex(nodeID int, match bool, lastMatch int)
 		follower.nextIndex = lastMatch + 1
 		follower.matchIndex = lastMatch
 	} else {
-		// cap nextIndex to 0. It is meaningless when less than zero
+		// prev entries don't match. decrement nextIndex.
+		// cap it to 0. It is meaningless when less than zero
 		follower.nextIndex = util.Max(0, follower.nextIndex-nextIndexFallbackStep)
 	}
 }

@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -44,6 +45,9 @@ type INode interface {
 	// Lifecycle
 	INodeLifeCycleProvider
 }
+
+// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // node A raft node
 type node struct {
@@ -93,6 +97,21 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 	return n
 }
 
+// Start starts the node
+func (n *node) Start() {
+	n.mu.Lock()
+	n.mu.Unlock()
+
+	util.WriteInfo("Node%d starting...", n.nodeID)
+	n.enterFollowerState(n.nodeID, 0)
+	n.timer.Start()
+}
+
+// Stop stops a node
+func (n *node) Stop() {
+	n.timer.Stop()
+}
+
 // OnTimer handles a timer event.
 // Action is based on node's current state
 func (n *node) OnTimer() {
@@ -106,99 +125,57 @@ func (n *node) OnTimer() {
 	}
 }
 
-// Start starts the node
-func (n *node) Start() {
+// Get gets values from state machine, no need to proxy
+func (n *node) Get(req *GetRequest) (*GetReply, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var result *GetReply = nil
+
+	ret, err := n.logMgr.Get(req.Params...)
+	if err == nil {
+		result = &GetReply{
+			NodeID: n.nodeID,
+			Data:   ret,
+		}
+	}
+
+	return result, err
+}
+
+// Execute runs a command via the raft node
+// If current node is the leader, it'll append the cmd to logs
+// If current node is not the leader, it'll proxy the request to leader node
+func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Lock()
+
+	leader := n.currentLeader
+	success := false
+
+	if n.nodeState == Leader {
+		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
+
+		for _, follower := range n.followers {
+			n.replicateLogsTo(follower.nodeID)
+		}
+
+		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
+		// For now we return eagerly and don't wait for majority based commit.
+		// Instead commit is done asynchronously after replication (upon AE replies).
+		success = true
+	}
+
 	n.mu.Unlock()
 
-	util.WriteInfo("Node%d starting...", n.nodeID)
-	n.enterFollowerState(n.nodeID, 0)
-	n.timer.Start()
-}
-
-func (n *node) Stop() {
-	n.timer.Stop()
-}
-
-// enter follower state and follows new leader (or potential leader)
-func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
-	oldLeader := n.currentLeader
-	n.nodeState = Follower
-	n.currentLeader = sourceNodeID
-	n.setTerm(newTerm)
-
-	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
-		util.WriteInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
-	}
-}
-
-// enter candidate state
-func (n *node) enterCandidateState() {
-	n.nodeState = Candidate
-	n.currentLeader = -1
-	n.setTerm(n.currentTerm + 1)
-
-	// vote for self first
-	n.votedFor = n.nodeID
-	n.votes = make(map[int]bool, n.clusterSize)
-	n.votes[n.nodeID] = true
-
-	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
-}
-
-// enterLeaderState resets leader indicies. Caller should acquire writer lock
-func (n *node) enterLeaderState() {
-	n.nodeState = Leader
-	n.currentLeader = n.nodeID
-
-	// reset all follower's indicies
-	n.followers.resetAllIndices(n.logMgr.LastIndex())
-
-	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
-}
-
-func (n *node) setTerm(newTerm int) {
-	if newTerm < n.currentTerm {
-		util.Panicf("can't set new term %d, which is less than current term %d\n", newTerm, n.currentTerm)
+	if success {
+		return &ExecuteReply{NodeID: n.nodeID, Success: true}, nil
+	} else if leader == -1 {
+		return nil, errorNoLeaderAvailable
 	}
 
-	if newTerm > n.currentTerm {
-		// reset vote on higher term
-		n.votedFor = -1
-	}
-
-	n.currentTerm = newTerm
-}
-
-// start an election, caller should acquire write lock
-func (n *node) startElection() {
-	n.enterCandidateState()
-
-	// create RV request
-	req := &RequestVoteRequest{
-		Term:         n.currentTerm,
-		CandidateID:  n.nodeID,
-		LastLogIndex: n.logMgr.LastIndex(),
-		LastLogTerm:  n.logMgr.LastTerm(),
-	}
-
-	// request vote (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
-
-	n.refreshTimer()
-}
-
-// send heartbeat, caller should acquire at least reader lock
-func (n *node) sendHeartbeat() {
-	// create empty AE request
-	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, n.logMgr.LastIndex()+1)
-	util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
-
-	// send heart beat (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastAppendEntries(req, n.handleAppendEntriesReply)
-
-	// 5.2 - refresh timer
-	n.refreshTimer()
+	// proxy to leader instead, no lock needed
+	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
+	return n.peerMgr.Execute(leader, cmd)
 }
 
 // Check peer's term and follow if needed. This will be called upon all RPC request and responses.
@@ -222,67 +199,11 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 	return follow
 }
 
-// replicateLogsTo replicate logs to follower as needed
-// This should be only be called by leader
-func (n *node) replicateLogsTo(targetNodeID int) {
-	target := n.followers[targetNodeID]
-
-	if target.nextIndex > n.logMgr.LastIndex() {
-		// nothing to replicate
-		return
-	}
-
-	// there are logs to replicate, create AE request and send
-	req := n.logMgr.CreateAERequest(n.currentTerm, n.nodeID, target.nextIndex)
-	minIdx := req.Entries[0].Index
-	maxIdx := req.Entries[len(req.Entries)-1].Index
-	util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
-
-	n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
-}
-
-// leaderCommit commits logs as needed by checking each follower's match index
-// This should only be called by leader
-func (n *node) leaderCommit() {
-	commitIndex := n.logMgr.CommitIndex()
-	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
-		entry := n.logMgr.GetLogEntry(i)
-
-		if entry.Term < n.currentTerm {
-			// 5.4.2 Raft doesn't allow committing of previous terms
-			// A leader shall only commit entries added by itself, and term is the indication of ownership
-			break
-		} else if entry.Term > n.currentTerm {
-			// This will never happen, adding for safety purpose
-			continue
-		}
-
-		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.followers.majorityMatch(i) {
-			commitIndex = i
-			break
-		}
-	}
-
-	n.commitTo(commitIndex)
-}
-
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
 	if n.logMgr.Commit(targetCommitIndex) {
 		util.WriteInfo("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 	}
-}
-
-// count votes for current node and term and return true if we won
-func (n *node) wonMajorityVotes() bool {
-	total := 0
-	for _, v := range n.votes {
-		if v {
-			total++
-		}
-	}
-	return total > n.clusterSize/2
 }
 
 // Refreshes timer based on current state

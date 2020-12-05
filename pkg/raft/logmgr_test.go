@@ -75,11 +75,11 @@ func TestProcessLogs(t *testing.T) {
 		lastIndex: 4,
 		lastTerm:  3,
 	}
-	lm.logs[0].Term = 1
-	lm.logs[1].Term = 1
-	lm.logs[2].Term = 2
-	lm.logs[3].Term = 2
-	lm.logs[4].Term = 3
+	lm.logs[0] = LogEntry{Index: 0, Term: 1}
+	lm.logs[1] = LogEntry{Index: 1, Term: 1}
+	lm.logs[2] = LogEntry{Index: 2, Term: 2}
+	lm.logs[3] = LogEntry{Index: 3, Term: 2}
+	lm.logs[4] = LogEntry{Index: 4, Term: 3}
 
 	// empty entries
 	if lm.ProcessLogs(6, 5, make([]LogEntry, 0)) {
@@ -206,7 +206,7 @@ func TestAppendLogs(t *testing.T) {
 		lastIndex: 4,
 		lastTerm:  3,
 	}
-	lm.logs[4].Term = 3
+	lm.logs[4] = LogEntry{Index: 4, Term: 3}
 
 	entries := make([]LogEntry, 0)
 	lm.appendLogs(entries)
@@ -214,10 +214,18 @@ func TestAppendLogs(t *testing.T) {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on empty input")
 	}
 
+	// Append two more entries @term 20
 	entries = generateTestEntries(4, 20)
 	lm.appendLogs(entries)
 	if lm.LastIndex() != 6 || lm.lastTerm != 20 || len(lm.logs) != 7 {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on non empty input")
+	}
+
+	// null appending with null initial
+	lm.logs = []LogEntry{}
+	lm.appendLogs([]LogEntry{})
+	if lm.lastIndex != -1 || lm.lastTerm != -1 {
+		t.Error("appendLogs should set lastIndex/lastTerm to -1")
 	}
 }
 
@@ -276,13 +284,13 @@ func TestFindFirstConflictingEntryIndex(t *testing.T) {
 }
 
 func generateTestEntries(prevIndex, newTerm int) []LogEntry {
-	entries := make([]LogEntry, 2)
-	entries[0].Index = prevIndex + 1
-	entries[0].Term = newTerm
-	entries[0].Cmd.Data = prevIndex + 1
-	entries[1].Index = prevIndex + 2
-	entries[1].Term = newTerm
-	entries[1].Cmd.Data = prevIndex + 2
+	num := 2
+	entries := make([]LogEntry, num)
+
+	for i := 0; i < num; i++ {
+		entries[i] = LogEntry{Index: prevIndex + 1 + i, Term: newTerm}
+		entries[i].Cmd.Data = prevIndex + 1 + i
+	}
 
 	return entries
 }

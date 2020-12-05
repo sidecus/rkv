@@ -152,7 +152,7 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 	lm.commitIndex = targetIndex
 	if targetIndex > lm.lastApplied {
 		for i := lm.lastApplied + 1; i <= targetIndex; i++ {
-			lm.statemachine.Apply(lm.logs[i].Cmd)
+			lm.statemachine.Apply(lm.GetLogEntry(i).Cmd)
 		}
 		lm.lastApplied = targetIndex
 	}
@@ -169,7 +169,7 @@ func (lm *LogManager) CreateAERequest(term, leaderID, nextIdx int) *AppendEntrie
 	prevIdx := nextIdx - 1
 	prevTerm := -1
 	if prevIdx >= 0 {
-		prevTerm = lm.logs[prevIdx].Term
+		prevTerm = lm.GetLogEntry(prevIdx).Term
 	}
 
 	nextNext := util.Min(nextIdx+maxAppendEntriesCount, lm.lastIndex+1)
@@ -196,7 +196,7 @@ func (lm *LogManager) hasMatchingPrevEntry(prevLogIndex, prevLogTerm int) bool {
 		return false
 	}
 
-	return lm.logs[prevLogIndex].Term == prevLogTerm
+	return lm.GetLogEntry(prevLogIndex).Term == prevLogTerm
 }
 
 // validates incoming logs, panicing on bad data
@@ -229,11 +229,13 @@ func (lm *LogManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 // Caller should use appendCmd or appendLogs instead
 func (lm *LogManager) appendLogs(entries []LogEntry) {
 	lm.logs = append(lm.logs, entries...)
-	lm.lastIndex = len(lm.logs) - 1
-	if lm.lastIndex == -1 {
+	if len(lm.logs) == 0 {
+		lm.lastIndex = -1
 		lm.lastTerm = -1
 	} else {
-		lm.lastTerm = lm.logs[lm.lastIndex].Term
+		lastEntry := lm.logs[len(lm.logs)-1]
+		lm.lastIndex = lastEntry.Index
+		lm.lastTerm = lastEntry.Term
 	}
 }
 
@@ -249,7 +251,7 @@ func (lm *LogManager) findFirstConflictIndex(prevLogIndex int, entries []LogEntr
 	// Find first non-matching index
 	index := start
 	for index = start; index < end; index++ {
-		if index > lm.lastIndex || entries[index-start].Term != lm.logs[index].Term {
+		if index > lm.lastIndex || entries[index-start].Term != lm.GetLogEntry(index).Term {
 			break
 		}
 	}
