@@ -65,7 +65,7 @@ type node struct {
 	peerMgr       IPeerManager
 
 	// leader only
-	followers followerInfo
+	followers followerStatus
 
 	// candidate only
 	votes map[int]bool

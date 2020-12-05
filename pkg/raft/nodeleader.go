@@ -8,7 +8,7 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.followers.resetAllIndices(n.logMgr.LastIndex())
+	n.followers.reset(n.logMgr.LastIndex())
 
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }

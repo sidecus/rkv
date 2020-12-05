@@ -4,23 +4,6 @@ import "github.com/sidecus/raft/pkg/util"
 
 const maxAppendEntriesCount = 5
 
-// StateMachineCmd holds one command to the statemachine
-type StateMachineCmd struct {
-	CmdType int
-	Data    interface{}
-}
-
-// IValueGetter defines an interface to get a value
-type IValueGetter interface {
-	Get(param ...interface{}) (interface{}, error)
-}
-
-// IStateMachine is the interface for the underneath statemachine
-type IStateMachine interface {
-	Apply(cmd StateMachineCmd)
-	IValueGetter
-}
-
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
 	Index int

@@ -75,17 +75,17 @@ func TestEnterCandidateState(t *testing.T) {
 }
 
 func TestEnterLeaderState(t *testing.T) {
-	follower99 := &followerIndex{
+	follower99 := &fStatus{
 		nodeID:     99,
 		nextIndex:  30,
 		matchIndex: 20,
 	}
-	follower105 := &followerIndex{
+	follower105 := &fStatus{
 		nodeID:     105,
 		nextIndex:  100,
 		matchIndex: 70,
 	}
-	followerIndicies := make(map[int]*followerIndex)
+	followerIndicies := make(map[int]*fStatus)
 	followerIndicies[99] = follower99
 	followerIndicies[105] = follower105
 

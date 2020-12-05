@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"io"
 	"testing"
 )
 
@@ -15,6 +16,10 @@ func (sm *testStateMachine) Apply(cmd StateMachineCmd) {
 
 func (sm *testStateMachine) Get(param ...interface{}) (result interface{}, err error) {
 	return param[0], nil
+}
+
+func (sm *testStateMachine) Snapshot() (io.Reader, error) {
+	return nil, nil
 }
 
 func TestProcessCmd(t *testing.T) {

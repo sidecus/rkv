@@ -4,28 +4,28 @@ import "github.com/sidecus/raft/pkg/util"
 
 const nextIndexFallbackStep = 5
 
-// followerIndex manages nextIndex and matchIndex for a follower
-type followerIndex struct {
+// fStatus manages nextIndex and matchIndex for a follower
+type fStatus struct {
 	nodeID     int
 	nextIndex  int
 	matchIndex int
 }
 
-// followerInfo manages next/match indicies for all followers
+// followerStatus manages next/match indicies for all followers
 // This is used by leader to replicate logs
-type followerInfo map[int]*followerIndex
+type followerStatus map[int]*fStatus
 
 // createFollowers creates the follower indicies
-func createFollowers(nodeID int, peers map[int]PeerInfo) followerInfo {
+func createFollowers(nodeID int, peers map[int]PeerInfo) followerStatus {
 	if _, ok := peers[nodeID]; ok {
 		util.Panicf("current node %d is listed in peers\n", nodeID)
 	}
 
-	ret := make(map[int]*followerIndex, len(peers))
+	ret := make(map[int]*fStatus, len(peers))
 
 	// Initialize follower info array
 	for _, v := range peers {
-		ret[v.NodeID] = &followerIndex{
+		ret[v.NodeID] = &fStatus{
 			nodeID:     v.NodeID,
 			nextIndex:  0,
 			matchIndex: -1,
@@ -36,7 +36,7 @@ func createFollowers(nodeID int, peers map[int]PeerInfo) followerInfo {
 }
 
 // reset all follower's indices based on lastLogIndex
-func (info followerInfo) resetAllIndices(lastLogIndex int) {
+func (info followerStatus) reset(lastLogIndex int) {
 	for _, v := range info {
 		v.nextIndex = lastLogIndex + 1
 		v.matchIndex = -1
@@ -44,7 +44,7 @@ func (info followerInfo) resetAllIndices(lastLogIndex int) {
 }
 
 // update match index for a given node
-func (info followerInfo) updateMatchIndex(nodeID int, match bool, lastMatch int) {
+func (info followerStatus) updateMatchIndex(nodeID int, match bool, lastMatch int) {
 	follower := info[nodeID]
 	if follower == nil {
 		util.Panicf("Invalid nodeID %d when calling updateMatchIndex\n", nodeID)
@@ -61,7 +61,7 @@ func (info followerInfo) updateMatchIndex(nodeID int, match bool, lastMatch int)
 }
 
 // do we have majority of the followers match the given logIndex
-func (info followerInfo) majorityMatch(logIndex int) bool {
+func (info followerStatus) majorityMatch(logIndex int) bool {
 	// both match count and majority should include the leader itself, which is not in the followerInfo
 	matchCnt := 1
 	majority := (len(info) + 1) / 2

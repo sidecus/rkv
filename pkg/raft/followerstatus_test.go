@@ -21,7 +21,7 @@ func TestCreateFollowers(t *testing.T) {
 	}
 }
 
-func TestResetAllIndices(t *testing.T) {
+func TestReset(t *testing.T) {
 	followers := createTestFollowers(3)
 	followers[0].nextIndex = 5
 	followers[0].matchIndex = 3
@@ -30,17 +30,17 @@ func TestResetAllIndices(t *testing.T) {
 	followers[2].nextIndex = 6
 	followers[2].matchIndex = -1
 
-	followers.resetAllIndices(20)
+	followers.reset(20)
 	for i := 0; i < 3; i++ {
 		if followers[i].nextIndex != 21 || followers[i].matchIndex != -1 {
-			t.Fatal("resetAllIndices doesn't reset on positive last index")
+			t.Fatal("reset doesn't reset on positive last index")
 		}
 	}
 
-	followers.resetAllIndices(-1)
+	followers.reset(-1)
 	for i := 0; i < 3; i++ {
 		if followers[i].nextIndex != 0 || followers[i].matchIndex != -1 {
-			t.Fatal("resetAllIndices doesn't reset on -1 as last index")
+			t.Fatal("reset doesn't reset on -1 as last index")
 		}
 	}
 }
@@ -102,7 +102,7 @@ func TestMajorityMatch(t *testing.T) {
 	}
 }
 
-func createTestFollowers(size int) followerInfo {
+func createTestFollowers(size int) followerStatus {
 	peers := make(map[int]PeerInfo)
 	for i := 0; i < size; i++ {
 		peers[i] = PeerInfo{NodeID: i}

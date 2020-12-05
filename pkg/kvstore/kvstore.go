@@ -1,8 +1,11 @@
 package kvstore
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/raft"
@@ -72,4 +75,18 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 	}
 
 	return "", fmt.Errorf("Key %s doesn't exist", key)
+}
+
+// Snapshot implements IStateMachine.Snapshot
+func (store *KVStore) Snapshot() (io.Reader, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	// we use JSON serialized data for our kv store
+	byteData, err := json.Marshal(store.data)
+	if err != nil {
+		return nil, err
+	}
+
+	return bytes.NewReader(byteData), nil
 }
