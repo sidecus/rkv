@@ -99,7 +99,7 @@ func (lm *LogManager) GetLogEntry(index int) LogEntry {
 // It also returns the prevIndex/prevTerm
 func (lm *LogManager) GetLogEntries(startIndex int, count int) (entries []LogEntry, prevIndex int, prevTerm int) {
 	if startIndex < 0 || startIndex > lm.LastIndex()+1 {
-		util.Panicf("start %d shall never be less than zero or larger than lastLogIndex(%d) + 1\n", startIndex, lm.LastIndex()+1)
+		util.Panicf("start %d shall never be less than zero or larger than lastIndex(%d) + 1\n", startIndex, lm.LastIndex()+1)
 	}
 
 	if count < 0 {
