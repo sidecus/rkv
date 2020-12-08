@@ -6,7 +6,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-// PeerInfo contains info for a peer node
+// PeerInfo contains info for a peer node including id and endpoint
 type PeerInfo struct {
 	NodeID   int
 	Endpoint string
@@ -31,7 +31,7 @@ type IPeerProxy interface {
 
 // Peer contains information for a raft peer
 type Peer struct {
-	info  PeerInfo
+	PeerInfo
 	proxy IPeerProxy
 }
 
@@ -64,11 +64,9 @@ func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) IPeerMana
 	}
 
 	for _, info := range peers {
-		proxy := factory.NewPeerProxy(info)
-
 		mgr.Peers[info.NodeID] = Peer{
-			info:  info,
-			proxy: proxy,
+			PeerInfo: info,
+			proxy:    factory.NewPeerProxy(info),
 		}
 	}
 
@@ -89,7 +87,7 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, cal
 func (mgr *PeerManager) BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
 	// send request to all peers
 	for _, peer := range mgr.Peers {
-		mgr.AppendEntries(peer.info.NodeID, req, callback)
+		mgr.AppendEntries(peer.NodeID, req, callback)
 	}
 }
 
@@ -104,7 +102,7 @@ func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, callbac
 // BroadcastRequestVote handles raft RPC RV calls to all peer nodes
 func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
 	for _, peer := range mgr.Peers {
-		mgr.RequestVote(peer.info.NodeID, req, callback)
+		mgr.RequestVote(peer.NodeID, req, callback)
 	}
 }
 

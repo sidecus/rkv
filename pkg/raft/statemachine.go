@@ -14,8 +14,12 @@ type IValueGetter interface {
 }
 
 // IStateMachine is the interface for the underneath statemachine
+// detailed implementation needs to have proper R/W locks
+// Writer locks for Apply/Deserialize
+// Reader locks for Serialize/Get
 type IStateMachine interface {
 	Apply(cmd StateMachineCmd)
-	Snapshot() (io.Reader, error)
+	Serialize(io.Writer) error
+	Deserialize(reader io.Reader) error
 	IValueGetter
 }

@@ -1,7 +1,6 @@
 package kvstore
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,16 +76,19 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 	return "", fmt.Errorf("Key %s doesn't exist", key)
 }
 
-// Snapshot implements IStateMachine.Snapshot
-func (store *KVStore) Snapshot() (io.Reader, error) {
+// Serialize implements IStateMachine.TakeSnapshot
+func (store *KVStore) Serialize(w io.Writer) error {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
 	// we use JSON serialized data for our kv store
-	byteData, err := json.Marshal(store.data)
-	if err != nil {
-		return nil, err
-	}
+	return json.NewEncoder(w).Encode(store.data)
+}
 
-	return bytes.NewReader(byteData), nil
+// Deserialize installs a snapshot, it implements IStateMachine.InstallSnapshot
+func (store *KVStore) Deserialize(reader io.Reader) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	return json.NewDecoder(reader).Decode(&store.data)
 }

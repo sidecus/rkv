@@ -2,6 +2,8 @@ package raft
 
 import "github.com/sidecus/raft/pkg/util"
 
+const maxAppendEntriesCount = 5
+
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
 	n.nodeState = Leader

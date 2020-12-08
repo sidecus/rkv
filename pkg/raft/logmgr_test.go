@@ -18,12 +18,52 @@ func (sm *testStateMachine) Get(param ...interface{}) (result interface{}, err e
 	return param[0], nil
 }
 
-func (sm *testStateMachine) Snapshot() (io.Reader, error) {
-	return nil, nil
+func (sm *testStateMachine) Serialize(io.Writer) error {
+	return nil
+}
+
+func (sm *testStateMachine) Deserialize(reader io.Reader) error {
+	return nil
+}
+
+func TestNewLogManager(t *testing.T) {
+	lm := NewLogMgr(100, &testStateMachine{}, "abcdefg").(*LogManager)
+
+	if lm.nodeID != 100 {
+		t.Error("LogManager created with invalid node ID")
+	}
+
+	if lm.lastIndex != -1 {
+		t.Error("LogManager created with invalid lastIndex")
+	}
+
+	if lm.lastTerm != -1 {
+		t.Error("LogManager created with invalid lastTerm")
+	}
+
+	if lm.commitIndex != -1 {
+		t.Error("LogManager created with invalid commitIndex")
+	}
+
+	if lm.snapshotIndex != -1 {
+		t.Error("LogManager created with invalid snapshotIndex")
+	}
+
+	if lm.snapshotTerm != -1 {
+		t.Error("LogManager created with invalid snapshotTerm")
+	}
+
+	if lm.lastApplied != -1 {
+		t.Error("LogManager created with invalid lastApplied")
+	}
+
+	if lm.snapshotPath != "abcdefg" {
+		t.Error("LogManager created with invalid snapshotPath")
+	}
 }
 
 func TestProcessCmd(t *testing.T) {
-	lm := NewLogMgr(&testStateMachine{}).(*LogManager)
+	lm := NewLogMgr(100, &testStateMachine{}, "").(*LogManager)
 	cmd := StateMachineCmd{}
 	if lm.LastIndex() != -1 {
 		t.Error("LastIndex is not -1 upon init")
@@ -75,11 +115,11 @@ func TestProcessCmd(t *testing.T) {
 }
 
 func TestProcessLogs(t *testing.T) {
-	lm := &LogManager{
-		logs:      make([]LogEntry, 5),
-		lastIndex: 4,
-		lastTerm:  3,
-	}
+	sm := &testStateMachine{lastApplied: -1}
+	lm := NewLogMgr(100, sm, "").(*LogManager)
+	lm.logs = make([]LogEntry, 5)
+	lm.lastIndex = 4
+	lm.lastTerm = 3
 	lm.logs[0] = LogEntry{Index: 0, Term: 1}
 	lm.logs[1] = LogEntry{Index: 1, Term: 1}
 	lm.logs[2] = LogEntry{Index: 2, Term: 2}
@@ -88,44 +128,44 @@ func TestProcessLogs(t *testing.T) {
 
 	// empty entries
 	if lm.ProcessLogs(6, 5, make([]LogEntry, 0)) {
-		t.Error("appendLogs should return false on nonmatching prevIndex/prevTerm")
+		t.Error("ProcessLogs should return false on nonmatching prevIndex/prevTerm")
 	}
 	if lm.LastIndex() != 4 {
-		t.Error("appendLogs should not modify lastIndex on nonmatching prev entry")
+		t.Error("ProcessLogs should not modify lastIndex on nonmatching prev entry")
 	}
 
 	if !lm.ProcessLogs(4, 3, make([]LogEntry, 0)) {
-		t.Error("appendLogs should return true on matching prevIndex/prevTerm")
+		t.Error("ProcessLogs should return true on matching prevIndex/prevTerm")
 	}
 	if lm.LastIndex() != 4 {
-		t.Error("appendLogs should not modify lastIndex on empty entries")
+		t.Error("ProcessLogs should not modify lastIndex on empty entries")
 	}
 
 	// entries are much newer than logs we have
 	entries := generateTestEntries(5, 3)
 	if lm.ProcessLogs(5, 3, entries) {
-		t.Error("appendLogs should return false on nonmatching prevIndex/prevTerm when entries is non empty")
+		t.Error("ProcessLogs should return false on nonmatching prevIndex/prevTerm when entries is non empty")
 	}
 	if lm.LastIndex() != 4 {
-		t.Error("appendLogs should not modify logs for much newer logs")
+		t.Error("ProcessLogs should not modify logs for much newer logs")
 	}
 
 	// simple append
 	entries = generateTestEntries(4, 10)
 	if !lm.ProcessLogs(4, 3, entries) {
-		t.Error("appendLogs should return true on correct new logs")
+		t.Error("ProcessLogs should return true on correct new logs")
 	}
 	if lm.LastIndex() != 6 || lm.lastTerm != 10 {
-		t.Error("appendLogs should append correct new logs")
+		t.Error("ProcessLogs should append correct new logs")
 	}
 
 	// 1 overlapping bad entry
 	entries = generateTestEntries(3, 10)
 	if !lm.ProcessLogs(3, 2, entries) {
-		t.Error("appendLogs should return true by skiping non matching entries")
+		t.Error("ProcessLogs should return true by skiping non matching entries")
 	}
 	if lm.LastIndex() != 5 || lm.lastTerm != 10 {
-		t.Error("appendLogs skip bad entries and append rest good ones")
+		t.Error("ProcessLogs skip bad entries and append rest good ones")
 	}
 
 	// all entries are overlapping and non matching
@@ -151,7 +191,7 @@ func TestProcessLogs(t *testing.T) {
 
 func TestCommit(t *testing.T) {
 	sm := &testStateMachine{lastApplied: -1}
-	lm := NewLogMgr(sm).(*LogManager)
+	lm := NewLogMgr(100, sm, "").(*LogManager)
 
 	// append two logs to it
 	entries := generateTestEntries(-1, 1)
@@ -182,8 +222,9 @@ func TestCommit(t *testing.T) {
 
 func TestHasMatchingPrevEntry(t *testing.T) {
 	lm := LogManager{
-		logs:      make([]LogEntry, 100),
-		lastIndex: 10,
+		logs:          make([]LogEntry, 100),
+		lastIndex:     10,
+		snapshotIndex: -1,
 	}
 	lm.logs[9].Term = 4
 	lm.logs[10].Term = 5
@@ -236,8 +277,9 @@ func TestAppendLogs(t *testing.T) {
 
 func TestFindFirstConflictingEntryIndex(t *testing.T) {
 	lm := &LogManager{
-		logs:      make([]LogEntry, 5),
-		lastIndex: 4,
+		logs:          make([]LogEntry, 5),
+		snapshotIndex: -1,
+		lastIndex:     4,
 	}
 	lm.logs[0] = LogEntry{Index: 0, Term: 1}
 	lm.logs[1] = LogEntry{Index: 1, Term: 2}
@@ -304,6 +346,8 @@ func TestGetLogEntries(t *testing.T) {
 	lm := &LogManager{
 		lastIndex: -1,
 		lastTerm:  -1,
+		// TODO[sidecus]: test different snapshot index scenarios
+		snapshotIndex: -1,
 	}
 
 	// no elements

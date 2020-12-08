@@ -2,6 +2,7 @@ package raft
 
 import (
 	"errors"
+	"os"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -78,6 +79,12 @@ type node struct {
 func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
 	size := len(peers) + 1
 
+	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		util.Panicf("Failed to get current working directory for snapshot. %s", err)
+	}
+
 	n := &node{
 		mu:            sync.RWMutex{},
 		clusterSize:   size,
@@ -86,7 +93,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
-		logMgr:        NewLogMgr(sm),
+		logMgr:        NewLogMgr(nodeID, sm, cwd),
 		peerMgr:       NewPeerManager(peers, proxyFactory),
 		followers:     createFollowers(nodeID, peers),
 		votes:         make(map[int]bool, size),
@@ -100,7 +107,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 // Start starts the node
 func (n *node) Start() {
 	n.mu.Lock()
-	n.mu.Unlock()
+	defer n.mu.Unlock()
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
 	n.enterFollowerState(n.nodeID, 0)
@@ -109,6 +116,9 @@ func (n *node) Start() {
 
 // Stop stops a node
 func (n *node) Stop() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	n.timer.Stop()
 }
 
@@ -171,8 +181,10 @@ func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
 
 // Get gets values from state machine, no need to proxy
 func (n *node) Get(req *GetRequest) (*GetReply, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
+	// We don't need lock on the node since we are only accessing its logMgr property which never changes after startup.
+	// However, this means the downstream component (statemachine) must implement proper locking. Our KVStore for exmaple, does it.
+	// n.mu.RLock()
+	// defer n.mu.RUnlock()
 
 	var result *GetReply = nil
 
@@ -198,8 +210,9 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 
 	if n.nodeState == Leader {
 		// Process the command, then replicate to followers
-		// TODO[sidecus]: low pri 5.3, 5.4 - wait for response and then commit.
-		// For now we return eagerly and don't wait for follower's response synchronously
+		// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit,
+		// as well infinite retry upon failure.
+		// We take a different approach here - we return eagerly and don't wait for follower's response synchronously
 		// Instead commit is done asynchronously after replication (upon AE replies).
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
 		for _, follower := range n.followers {

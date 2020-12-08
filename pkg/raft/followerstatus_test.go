@@ -102,12 +102,18 @@ func TestMajorityMatch(t *testing.T) {
 	}
 }
 
-func createTestFollowers(size int) followerStatus {
+// Create n peers with index from 0 to n-1
+func createTestPeerInfo(n int) map[int]PeerInfo {
 	peers := make(map[int]PeerInfo)
-	for i := 0; i < size; i++ {
+	for i := 0; i < n; i++ {
 		peers[i] = PeerInfo{NodeID: i}
 	}
 
+	return peers
+}
+
+func createTestFollowers(size int) followerStatus {
+	peers := createTestPeerInfo(size)
 	followers := createFollowers(100, peers)
 
 	return followers

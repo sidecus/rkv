@@ -1,8 +1,14 @@
 package raft
 
-import "github.com/sidecus/raft/pkg/util"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
 
-const maxAppendEntriesCount = 5
+	"github.com/sidecus/raft/pkg/util"
+)
+
+const snapshotEntriesCount = 5
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -29,27 +35,42 @@ type ILogManager interface {
 
 // LogManager manages logs and the statemachine, implements ILogManager
 type LogManager struct {
-	commitIndex int
-	lastApplied int
+	nodeID      int
 	lastIndex   int
 	lastTerm    int
+	commitIndex int
+
+	// Last snapshot index and term
+	snapshotIndex int
+	snapshotTerm  int
+	snapshotFile  string
+	snapshotPath  string
 
 	// logs should be read from persistent storage upon init
 	logs []LogEntry
 
 	// reference to statemachien for commit operations
+	lastApplied  int
 	statemachine IStateMachine
 }
 
 // NewLogMgr creates a new logmgr
-func NewLogMgr(sm IStateMachine) ILogManager {
+func NewLogMgr(nodeID int, sm IStateMachine, snapshotPath string) ILogManager {
+	if sm == nil {
+		util.Panicf("state machien cannot be nil")
+	}
+
 	lm := &LogManager{
-		commitIndex:  -1,
-		lastIndex:    -1,
-		lastTerm:     -1,
-		lastApplied:  -1,
-		logs:         make([]LogEntry, 0),
-		statemachine: sm,
+		nodeID:        nodeID,
+		lastIndex:     -1,
+		lastTerm:      -1,
+		commitIndex:   -1,
+		snapshotIndex: -1,
+		snapshotTerm:  -1,
+		snapshotPath:  snapshotPath,
+		lastApplied:   -1,
+		logs:          make([]LogEntry, 0, 100),
+		statemachine:  sm,
 	}
 
 	return lm
@@ -72,7 +93,7 @@ func (lm *LogManager) CommitIndex() int {
 
 // GetLogEntry returns log entry for the given index
 func (lm *LogManager) GetLogEntry(index int) LogEntry {
-	return lm.logs[index]
+	return lm.logs[index-(lm.snapshotIndex+1)]
 }
 
 // GetLogEntries returns entries starting from startIndex (log index, not slice index)
@@ -159,7 +180,38 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 		lm.lastApplied = targetIndex
 	}
 
+	// take snapshot if needed
+	if lm.lastApplied-lm.snapshotIndex > snapshotEntriesCount {
+		// lm.takeSnapshot()
+	}
+
 	return true
+}
+
+// TakeSnapshot takes a snap shot and saves it to a file
+func (lm *LogManager) TakeSnapshot() error {
+	index := lm.lastApplied
+	term := lm.GetLogEntry(index).Term
+
+	f, err := ioutil.TempFile(os.TempDir(), fmt.Sprintf("snapshot_%d_%d", index, term))
+	defer f.Close()
+
+	err = lm.statemachine.Serialize(f)
+	if err != nil {
+		return err
+	}
+
+	// Truncate logs and update snapshotIndex and term
+	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex-index)
+	lm.snapshotIndex = index
+	lm.snapshotTerm = term
+
+	return nil
+}
+
+// InstallSnapshot installs a snapshot
+func (lm *LogManager) InstallSnapshot(fileName string, snapshotIndex int, snapshotTerm int) error {
+	return nil
 }
 
 // check to see whether we have a matching entry @prevLogIndex with prevLogTerm
