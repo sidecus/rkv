@@ -20,3 +20,4 @@
 /cmd/rkv/rkv
 /cmd/rkvclient/rkvclient
 *_debug_bin
+**/*.rkvsnapshot

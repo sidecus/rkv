@@ -109,7 +109,7 @@ func (n *node) leaderCommit() {
 
 // createAERequest creates an AppendEntriesRequest with proper log payload
 func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
-	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, count)
+	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, nextIdx+count)
 
 	req := &AppendEntriesRequest{
 		Term:         n.currentTerm,

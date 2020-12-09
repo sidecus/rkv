@@ -2,13 +2,14 @@ package raft
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 5
+// TODO[sidecus]: This is for easy local testing
+const snapshotEntriesCount = 1
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -40,13 +41,14 @@ type LogManager struct {
 	lastTerm    int
 	commitIndex int
 
-	// Last snapshot index and term
-	snapshotIndex int
-	snapshotTerm  int
-	snapshotFile  string
-	snapshotPath  string
+	// snap shot related
+	snapshotIndex    int
+	snapshotTerm     int
+	lastSnapshotFile string
+	snapshotPath     string // path to save snapshot files
 
 	// logs should be read from persistent storage upon init
+	// it contains entries from snapshotIndex+1 to lastIndex
 	logs []LogEntry
 
 	// reference to statemachien for commit operations
@@ -93,31 +95,29 @@ func (lm *LogManager) CommitIndex() int {
 
 // GetLogEntry returns log entry for the given index
 func (lm *LogManager) GetLogEntry(index int) LogEntry {
+	if index <= lm.snapshotIndex || index > lm.LastIndex() {
+		util.Panicf("GetLogEntry index %d shall be between (snapshotIndex(%d), lastIndex(%d)]\n", index, lm.snapshotIndex, lm.LastIndex())
+	}
 	return lm.logs[index-(lm.snapshotIndex+1)]
 }
 
-// GetLogEntries returns entries starting from startIndex (log index, not slice index)
-// Number of elements returned will be count if there is enough, or whatever is available after startIndex
-// If logs is empty and startIndex is 0, empty is returned.
-// If count is 0, empty is returned.
+// GetLogEntries returns entries between [start, end).
+// Same behavior as normal slicing but with index shiftted according to snapshotIndex.
 // It also returns the prevIndex/prevTerm
-func (lm *LogManager) GetLogEntries(startIndex int, count int) (entries []LogEntry, prevIndex int, prevTerm int) {
-	if startIndex < 0 || startIndex > lm.LastIndex()+1 {
-		util.Panicf("start %d shall never be less than zero or larger than lastIndex(%d) + 1\n", startIndex, lm.LastIndex()+1)
+func (lm *LogManager) GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int) {
+	if start <= lm.snapshotIndex {
+		util.Panicf("GetLogEntries start %d shall be between (snapshotIndex(%d), lastIndex(%d)]\n", start, lm.snapshotIndex, lm.LastIndex())
 	}
 
-	if count < 0 {
-		util.Panicf("count should be greater than or equal to 0")
+	if end < start {
+		util.Panicf("end should be greater than or equal to start")
 	}
 
-	prevIndex = startIndex - 1
-	prevTerm = -1
-	if prevIndex >= 0 {
-		prevTerm = lm.GetLogEntry(prevIndex).Term
-	}
-
-	endIndex := util.Min(startIndex+count, lm.LastIndex()+1)
-	entries = lm.logs[startIndex:endIndex]
+	prevIndex = start - 1
+	prevTerm = lm.getLogEntryTerm(prevIndex)
+	actualStart := start - (lm.snapshotIndex + 1)
+	actualEnd := util.Min(end-(lm.snapshotIndex+1), len(lm.logs))
+	entries = lm.logs[actualStart:actualEnd]
 
 	return
 }
@@ -154,9 +154,8 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 	// then append from incoming entries starting from that position
 	conflictIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
 	toAppend := entries[conflictIndex-(prevLogIndex+1):]
-
-	// Truncate logs and then call appendLogs, which will adjust lastIndex accordingly
-	lm.logs, _, _ = lm.GetLogEntries(0, conflictIndex)
+	lm.logs, _, _ = lm.GetLogEntries(lm.snapshotIndex+1, conflictIndex)
+	// appendLogs adjusts lastIndex accordingly
 	lm.appendLogs(toAppend)
 
 	return true
@@ -182,7 +181,7 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 
 	// take snapshot if needed
 	if lm.lastApplied-lm.snapshotIndex > snapshotEntriesCount {
-		// lm.takeSnapshot()
+		lm.TakeSnapshot()
 	}
 
 	return true
@@ -190,41 +189,97 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 
 // TakeSnapshot takes a snap shot and saves it to a file
 func (lm *LogManager) TakeSnapshot() error {
+	if lm.lastApplied == lm.snapshotIndex {
+		return nil // nothing to do
+	}
+
 	index := lm.lastApplied
-	term := lm.GetLogEntry(index).Term
+	term := lm.getLogEntryTerm(index)
 
-	f, err := ioutil.TempFile(os.TempDir(), fmt.Sprintf("snapshot_%d_%d", index, term))
-	defer f.Close()
-
-	err = lm.statemachine.Serialize(f)
+	name := fmt.Sprintf("Node%d_%d_%d.rkvsnapshot", lm.nodeID, index, term)
+	snapshotFile := filepath.Join(lm.snapshotPath, name)
+	f, err := os.Create(snapshotFile)
 	if err != nil {
 		return err
 	}
 
+	defer f.Close()
+
+	// Write to file and force a commit
+	if err := lm.statemachine.Serialize(f); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+
 	// Truncate logs and update snapshotIndex and term
-	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex-index)
+	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
 	lm.snapshotIndex = index
 	lm.snapshotTerm = term
+	lm.lastSnapshotFile = snapshotFile
 
 	return nil
 }
 
 // InstallSnapshot installs a snapshot
-func (lm *LogManager) InstallSnapshot(fileName string, snapshotIndex int, snapshotTerm int) error {
+// For simplicity, we drop all local logs after installing the snapshot
+func (lm *LogManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
+	f, err := os.Open(snapshotFile)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	// read and deserialize
+	if err := lm.statemachine.Deserialize(f); err != nil {
+		return err
+	}
+
+	lm.snapshotIndex = snapshotIndex
+	lm.snapshotTerm = snapshotTerm
+	lm.lastSnapshotFile = snapshotFile
+	lm.lastApplied = snapshotIndex
+	lm.commitIndex = snapshotIndex
+	lm.lastIndex = snapshotIndex
+	lm.lastTerm = snapshotTerm
+	lm.logs = lm.logs[0:0]
+
 	return nil
+}
+
+// findFirstConflictIndex finds the first conflicting entry by comparing incoming entries with local log entries
+// caller needs to ensure there is an entry matching prevLogIndex and prevLogTerm before calling this
+// if there is such a conflicting entry, its index is returned
+// if incoming entries is empty, prevLogIndex+1 will be returned
+// if there is no overlap, current lastIndex+1 will be returned
+// if everything matches, last matching entry's index + 1 is returned min(lastLogIndex+1, last entries index+1)
+func (lm *LogManager) findFirstConflictIndex(prevLogIndex int, entries []LogEntry) int {
+	if prevLogIndex < lm.snapshotIndex {
+		util.Panicln("prevLogIndex cannot be less than snapshotIndex")
+	}
+	start := prevLogIndex + 1
+	end := start + len(entries)
+
+	// Find first non-matching index
+	index := start
+	for index = start; index < end; index++ {
+		if index > lm.lastIndex || entries[index-start].Term != lm.GetLogEntry(index).Term {
+			break
+		}
+	}
+
+	return index
 }
 
 // check to see whether we have a matching entry @prevLogIndex with prevLogTerm
 func (lm *LogManager) hasMatchingPrevEntry(prevLogIndex, prevLogTerm int) bool {
-	if prevLogIndex == -1 && prevLogTerm == -1 {
-		return true // empty logs after init
-	}
-
-	if prevLogIndex > lm.lastIndex {
+	if prevLogIndex < lm.snapshotIndex || prevLogIndex > lm.lastIndex {
 		return false
 	}
-
-	return lm.GetLogEntry(prevLogIndex).Term == prevLogTerm
+	term := lm.getLogEntryTerm(prevLogIndex)
+	return term == prevLogTerm
 }
 
 // validates incoming logs, panicing on bad data
@@ -254,12 +309,12 @@ func (lm *LogManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 }
 
 // appendLogs appends new entries to logs, should only be called internally.
-// Caller should use appendCmd or appendLogs instead
+// Externall caller should use ProcessCmd or ProcessLogs instead
 func (lm *LogManager) appendLogs(entries []LogEntry) {
 	lm.logs = append(lm.logs, entries...)
 	if len(lm.logs) == 0 {
-		lm.lastIndex = -1
-		lm.lastTerm = -1
+		lm.lastIndex = lm.snapshotIndex
+		lm.lastTerm = lm.snapshotTerm
 	} else {
 		lastEntry := lm.logs[len(lm.logs)-1]
 		lm.lastIndex = lastEntry.Index
@@ -267,22 +322,16 @@ func (lm *LogManager) appendLogs(entries []LogEntry) {
 	}
 }
 
-// findFirstConflictIndex finds the first conflicting entry by comparing incoming entries with local log entries
-// If incoming entries is empty, prevLogIndex+1 will be returned
-// if there is such a conflicting entry, its index is returned
-// if everything matches, min(lastLogIndex+1, last entries index+1) is returned
-// The last scenario likely will never happen because in that case prevLogIndex should be bigger
-func (lm *LogManager) findFirstConflictIndex(prevLogIndex int, entries []LogEntry) int {
-	start := prevLogIndex + 1
-	end := start + len(entries)
-
-	// Find first non-matching index
-	index := start
-	for index = start; index < end; index++ {
-		if index > lm.lastIndex || entries[index-start].Term != lm.GetLogEntry(index).Term {
-			break
-		}
+// getLogEntryTerm gets the term for a given log index
+// Unlike GetLogEntry, this can return proper value when index == snapshotIndex (snapshot scenario) or index == -1 (prevIndex scenario)
+func (lm *LogManager) getLogEntryTerm(index int) int {
+	if index == -1 {
+		return -1
+	} else if index < lm.snapshotIndex || index > lm.lastIndex {
+		util.Panicf("getTerm index cannot be less than snapshotIndex or larger than lastIndex")
+	} else if index == lm.snapshotIndex {
+		return lm.snapshotTerm
 	}
 
-	return index
+	return lm.GetLogEntry(index).Term
 }
