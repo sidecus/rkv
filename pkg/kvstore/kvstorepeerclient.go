@@ -69,15 +69,8 @@ func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback fu
 	}
 }
 
-// InstallSnapshot takes
+// InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback func(*raft.AppendEntriesReply)) {
-	f, err := os.Open(req.File)
-	if err != nil {
-		//util.WriteError("Cannot open snapshot file (%s). %s", req.File, err)
-		return
-	}
-	defer f.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut) // longer timeout
 	defer cancel()
 
@@ -87,6 +80,13 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 		return
 	}
 
+	f, err := os.Open(req.File)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sr := fromRaftSnapshotRequest(req)
 	buf := make([]byte, chunkSize)
 	for {
 		n, err := f.Read(buf)
@@ -94,19 +94,22 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 			// done sending
 			break
 		} else if err != nil {
-			// error reading file. don't continue
+			//util.WriteError("Error reading file. %s", err)
 			return
 		}
 
-		sr := fromRaftSnapshotRequest(req)
 		sr.Data = buf[:n]
-		stream.Send(sr)
+		if err := stream.Send(sr); err != nil {
+			//util.WriteError("Error sending shapshot chunk. %s", err)
+			return
+		}
 	}
 
-	resp, err := stream.CloseAndRecv()
-	if err == nil {
+	if resp, err := stream.CloseAndRecv(); err == nil {
 		reply := toRaftAEReply(resp)
 		callback(reply)
+	} else {
+		//util.WriteError("Error receiving snapshot reply. %s", err)
 	}
 }
 

@@ -60,7 +60,7 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
 	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
 	var sr *raft.SnapshotRequest
-	var f *os.File
+	var file *os.File
 
 	for {
 		reqChunk, err := stream.Recv()
@@ -71,19 +71,16 @@ func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer)
 		}
 
 		// Create file if not yet
-		if f == nil {
-			if sr, err = s.createSnapshot(reqChunk); err != nil {
+		if file == nil {
+			if sr, file, err = s.generateSnapshotFileName(reqChunk); err != nil {
 				return err
 			}
 
-			if f, err = os.Create(sr.File); err != nil {
-				return err
-			}
-			defer f.Close()
+			defer file.Close()
 		}
 
 		// Write data
-		if _, err = f.Write(reqChunk.Data); err != nil {
+		if _, err = file.Write(reqChunk.Data); err != nil {
 			return err
 		}
 	}
@@ -93,8 +90,7 @@ func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer)
 	}
 
 	// close file before installing
-	f.Close()
-
+	file.Close()
 	var resp *raft.AppendEntriesReply
 	var err error
 	if resp, err = s.node.InstallSnapshot(sr); err != nil {
@@ -163,16 +159,23 @@ func (s *RPCServer) Stop() {
 	s.wg.Wait()
 }
 
-// Create snapshot
-func (s *RPCServer) createSnapshot(req *pb.SnapshotRequest) (*raft.SnapshotRequest, error) {
+// generateSnapshotFileName converts the request to raft request, and generates snapshot file path and name
+func (s *RPCServer) generateSnapshotFileName(req *pb.SnapshotRequest) (*raft.SnapshotRequest, *os.File, error) {
 	sr := toRaftSnapshotRequest(req)
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
+	// Generate file name
 	sr.File = filepath.Join(cwd, fmt.Sprintf("LeaderNode%d_%d_%d.rkvsnapshot", req.LeaderID, req.SnapshotIndex, req.SnapshotTerm))
 
-	return sr, nil
+	// Create file
+	var f *os.File
+	if f, err = os.Create(sr.File); err != nil {
+		return nil, nil, err
+	}
+
+	return sr, f, nil
 }
