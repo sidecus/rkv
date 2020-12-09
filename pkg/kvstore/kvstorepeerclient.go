@@ -94,13 +94,13 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 			// done sending
 			break
 		} else if err != nil {
-			//util.WriteError("Error reading file. %s", err)
+			util.WriteError("Error reading snapshott file. %s", err)
 			return
 		}
 
 		sr.Data = buf[:n]
 		if err := stream.Send(sr); err != nil {
-			//util.WriteError("Error sending shapshot chunk. %s", err)
+			util.WriteError("Error sending shapshot chunk. %s", err)
 			return
 		}
 	}
@@ -109,7 +109,7 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 		reply := toRaftAEReply(resp)
 		callback(reply)
 	} else {
-		//util.WriteError("Error receiving snapshot reply. %s", err)
+		util.WriteError("Error waiting for snapshot reply. %s", err)
 	}
 }
 

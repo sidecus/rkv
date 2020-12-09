@@ -16,7 +16,7 @@ func StopTimer(timer *time.Timer) {
 	}
 }
 
-// ResetTimer resets the timer with a new duration
+// ResetTimer stops the timer, drain events, and then resets the timer with a new duration
 func ResetTimer(timer *time.Timer, d time.Duration) {
 	StopTimer(timer)
 	timer.Reset(d)

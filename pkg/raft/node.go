@@ -111,8 +111,12 @@ func (n *node) Start() {
 	defer n.mu.Unlock()
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
-	n.enterFollowerState(n.nodeID, 0)
+
 	n.timer.Start()
+
+	// Enter follower state
+	n.enterFollowerState(n.nodeID, 0)
+	n.refreshTimer()
 }
 
 // Stop stops a node
@@ -181,14 +185,16 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 // onTimer handles a timer event.
 // Action is based on node's current state.
 // This is run on the timer goroutine so we need lock
-func (n *node) onTimer() {
+func (n *node) onTimer(state NodeState, term int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.nodeState == Follower || n.nodeState == Candidate {
-		n.startElection()
-	} else if n.nodeState == Leader {
-		n.sendHeartbeat()
+	if state == n.nodeState && term == n.currentTerm {
+		if n.nodeState == Follower || n.nodeState == Candidate {
+			n.startElection()
+		} else if n.nodeState == Leader {
+			n.sendHeartbeat()
+		}
 	}
 }
 
@@ -225,5 +231,5 @@ func (n *node) commitTo(targetCommitIndex int) {
 
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
-	n.timer.Refresh(n.nodeState)
+	n.timer.Refresh(n.nodeState, n.currentTerm)
 }
