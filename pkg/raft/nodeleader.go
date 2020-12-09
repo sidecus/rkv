@@ -10,7 +10,7 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.followers.reset(n.logMgr.LastIndex())
+	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
 
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -33,29 +33,31 @@ func (n *node) sendHeartbeat() {
 
 // replicateLogsTo replicate logs to follower as needed
 // This should be only be called by leader
-func (n *node) replicateLogsTo(targetNodeID int) {
-	target := n.followers[targetNodeID]
+func (n *node) replicateLogsTo(targetNodeID int) bool {
+	follower := n.peerMgr.GetPeer(targetNodeID)
 
-	if target.nextIndex > n.logMgr.LastIndex() {
+	if follower.nextIndex > n.logMgr.LastIndex() {
 		// nothing to replicate
-		return
+		return false
 	}
 
-	if target.nextIndex <= n.logMgr.SnapshotIndex() {
+	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot
 		req := n.createSnapshotRequest()
 		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
 
-		n.peerMgr.InstallSnapshot(target.nodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.InstallSnapshot(follower.NodeID, req, n.handleAppendEntriesReply)
 	} else {
 		// there are logs to replicate, create AE request and send
-		req := n.createAERequest(target.nextIndex, maxAppendEntriesCount)
+		req := n.createAERequest(follower.nextIndex, maxAppendEntriesCount)
 		minIdx := req.Entries[0].Index
 		maxIdx := req.Entries[len(req.Entries)-1].Index
 		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
-		n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.AppendEntries(follower.NodeID, req, n.handleAppendEntriesReply)
 	}
+
+	return true
 }
 
 // handleAppendEntriesReply handles append entries reply. Need locking since this will be
@@ -76,17 +78,17 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 		return
 	}
 
-	nodeID := reply.NodeID
+	followerID := reply.NodeID
 
 	// 5.3 update leader indicies.
 	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
 	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
 	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
-	n.followers.updateMatchIndex(nodeID, reply.Success, reply.LastMatch)
+	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
 
 	// Check whether there are logs to commit and then replicate
 	n.leaderCommit()
-	n.replicateLogsTo(nodeID)
+	n.replicateLogsTo(followerID)
 }
 
 // leaderCommit commits logs as needed by checking each follower's match index
@@ -106,7 +108,7 @@ func (n *node) leaderCommit() {
 		}
 
 		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.followers.majorityMatch(i) {
+		if n.peerMgr.MajorityMatch(i) {
 			commitIndex = i
 			break
 		}

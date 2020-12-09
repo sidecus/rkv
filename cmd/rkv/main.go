@@ -47,13 +47,13 @@ func printUsage() {
 
 func runRPC(nodeID int, port string, addresses []string) {
 	// initialize peers
-	peers := make(map[int]raft.PeerInfo)
+	peers := make(map[int]raft.NodeInfo)
 	for i, v := range addresses {
 		if i == nodeID {
 			continue
 		}
 
-		peers[i] = raft.PeerInfo{
+		peers[i] = raft.NodeInfo{
 			NodeID:   i,
 			Endpoint: v,
 		}

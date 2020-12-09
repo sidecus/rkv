@@ -66,9 +66,6 @@ type node struct {
 	logMgr        ILogManager
 	peerMgr       IPeerManager
 
-	// leader only
-	followers followerStatus
-
 	// candidate only
 	votes map[int]bool
 
@@ -77,7 +74,7 @@ type node struct {
 }
 
 // NewNode creates a new node
-func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
+func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
 	size := len(peers) + 1
 
 	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
@@ -95,8 +92,7 @@ func NewNode(nodeID int, peers map[int]PeerInfo, sm IStateMachine, proxyFactory 
 		currentLeader: -1,
 		votedFor:      -1,
 		logMgr:        NewLogMgr(nodeID, sm, cwd),
-		peerMgr:       NewPeerManager(peers, proxyFactory),
-		followers:     createFollowers(nodeID, peers),
+		peerMgr:       NewPeerManager(nodeID, peers, proxyFactory),
 		votes:         make(map[int]bool, size),
 	}
 
@@ -163,8 +159,8 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 		// We take a different approach here - we return eagerly and don't wait for follower's response synchronously
 		// Instead commit is done asynchronously after replication (upon AE replies).
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-		for _, follower := range n.followers {
-			n.replicateLogsTo(follower.nodeID)
+		for _, follower := range n.peerMgr.GetAllPeers() {
+			n.replicateLogsTo(follower.NodeID)
 		}
 		success = true
 	}

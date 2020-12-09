@@ -14,7 +14,7 @@ func TestNewNode(t *testing.T) {
 	peerCount := 2
 	nodeID := peerCount // last node
 	peers := createTestPeerInfo(peerCount)
-	n := NewNode(nodeID, peers, &testStateMachine{}, &testPeerFactory{}).(*node)
+	n := NewNode(nodeID, peers, &testStateMachine{}, &PeerFactoryMock{}).(*node)
 
 	if n.nodeID != nodeID {
 		t.Error("Node created with invalid node ID")
@@ -40,7 +40,7 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votedFor")
 	}
 
-	if len(n.followers) != peerCount {
+	if len(n.peerMgr.GetAllPeers()) != peerCount {
 		t.Error("Node created with invalid number of followers")
 	}
 
@@ -124,30 +124,23 @@ func TestEnterCandidateState(t *testing.T) {
 }
 
 func TestEnterLeaderState(t *testing.T) {
-	follower99 := &fStatus{
-		nodeID:     99,
-		nextIndex:  30,
-		matchIndex: 20,
-	}
-	follower105 := &fStatus{
-		nodeID:     105,
-		nextIndex:  100,
-		matchIndex: 70,
-	}
-	followerIndicies := make(map[int]*fStatus)
-	followerIndicies[99] = follower99
-	followerIndicies[105] = follower105
-
 	n := &node{
 		nodeID:        100,
 		nodeState:     Candidate,
 		currentTerm:   50,
 		currentLeader: -1,
-		followers:     followerIndicies,
+		peerMgr:       createTestPeerManager(2),
 		logMgr: &LogManager{
 			lastIndex: 3,
 		},
 	}
+
+	peer0 := n.peerMgr.GetPeer(0)
+	peer0.nextIndex = 30
+	peer0.matchIndex = 20
+	peer1 := n.peerMgr.GetPeer(1)
+	peer1.nextIndex = 100
+	peer1.matchIndex = 70
 
 	n.enterLeaderState()
 
@@ -160,10 +153,10 @@ func TestEnterLeaderState(t *testing.T) {
 	if n.currentTerm != 50 {
 		t.Error("enterLeaderState changes term by mistake")
 	}
-	if follower99.nextIndex != 4 || follower105.nextIndex != 4 {
+	if peer0.nextIndex != 4 || peer1.nextIndex != 4 {
 		t.Error("enterLeaderState didn't reset nextIndex for peers")
 	}
-	if follower99.matchIndex != -1 || follower105.matchIndex != -1 {
+	if peer0.matchIndex != -1 || peer1.matchIndex != -1 {
 		t.Error("enterLeaderState didn't reset matchIndex for peers")
 	}
 }
@@ -216,13 +209,13 @@ func TestLeaderCommit(t *testing.T) {
 	sm := &testStateMachine{
 		lastApplied: -111,
 	}
-	followers := createTestFollowers(2)
+	peerMgr := createTestPeerManager(2)
 	logMgr := NewLogMgr(100, sm, "").(*LogManager)
 
-	followers[0].nextIndex = 2
-	followers[0].matchIndex = 1
-	followers[1].nextIndex = 3
-	followers[1].matchIndex = 1
+	peerMgr.GetPeer(0).nextIndex = 2
+	peerMgr.GetPeer(0).matchIndex = 1
+	peerMgr.GetPeer(1).nextIndex = 3
+	peerMgr.GetPeer(1).matchIndex = 1
 
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
@@ -235,7 +228,7 @@ func TestLeaderCommit(t *testing.T) {
 		clusterSize: 3,
 		currentTerm: 3,
 		logMgr:      logMgr,
-		followers:   followers,
+		peerMgr:     peerMgr,
 	}
 
 	// We only have a match on 1st entry, but it's of a lower term
@@ -248,7 +241,7 @@ func TestLeaderCommit(t *testing.T) {
 	}
 
 	// We only have a majority match on 2nd entry in the same term
-	followers[1].matchIndex = 2
+	peerMgr.GetPeer(1).matchIndex = 2
 	n.leaderCommit()
 	if logMgr.commitIndex != 2 {
 		t.Error("leaderCommit shall commit to the right entry")
@@ -270,40 +263,79 @@ func TestReplicateLogsTo(t *testing.T) {
 		}, i+1)
 	}
 
-	followers := createTestFollowers(1)
-	tpm := &testPeerManager{
-		lastAENodeID: -1,
-		lastAEReq:    nil,
-	}
 	n := &node{
-		nodeID:      1,
+		nodeID:      2,
 		clusterSize: 3,
 		currentTerm: 3,
 		logMgr:      logMgr,
-		followers:   followers,
-		peerMgr:     tpm,
+		peerMgr:     createTestPeerManager(1),
 	}
 
+	peer0 := n.peerMgr.GetPeer(0)
+
 	// nextIndex is larger than lastIndex, nothing to replicate
-	followers[0].nextIndex = 6
-	followers[0].matchIndex = 1
-	n.replicateLogsTo(0)
-	if tpm.lastAENodeID != -1 || tpm.lastAEReq != nil {
+	peer0.nextIndex = logMgr.lastIndex + 1
+	peer0.matchIndex = 1
+	ret := n.replicateLogsTo(0)
+	if ret {
 		t.Error("replicateLogsTo should not replicate when nextIndex is high enough")
 	}
 
-	followers[0].nextIndex = 2
-	followers[0].matchIndex = 1
-	n.replicateLogsTo(0)
-	if tpm.lastAENodeID != 0 || tpm.lastAEReq == nil {
-		t.Error("replicateLogsTo should replicate based on nextIndex")
+	// nextIndex is smaler than lastIndex
+	peer0.nextIndex = 2
+	peer0.matchIndex = 1
+	ret = n.replicateLogsTo(0)
+	if !ret {
+		t.Error("replicateLogsTo should replicate logs but it didn't")
 	}
-	if tpm.lastAEReq.LeaderID != n.nodeID || tpm.lastAEReq.Term != 3 ||
-		tpm.lastAEReq.PrevLogIndex != 1 || tpm.lastAEReq.PrevLogTerm != 2 {
+	lastAEReq := peer0.proxy.(*PeerProxyMock).expectAECall()
+	if lastAEReq == nil {
+		t.Error("replicateLogsTo replicate with a nil request")
+	}
+	if lastAEReq.LeaderID != n.nodeID || lastAEReq.Term != 3 ||
+		lastAEReq.PrevLogIndex != 1 || lastAEReq.PrevLogTerm != 2 {
 		t.Error("wrong info are being replicated")
 	}
-	if len(tpm.lastAEReq.Entries) != 3 || tpm.lastAEReq.Entries[0].Index != 2 {
+	if len(lastAEReq.Entries) != 3 || lastAEReq.Entries[0].Index != 2 {
 		t.Error("replicated entries contain bad entries")
+	}
+
+	// nextIndex is the same as snapshotIndex
+	logMgr.snapshotIndex = 3
+	logMgr.snapshotTerm = 2
+	logMgr.lastSnapshotFile = "snapshot"
+	peer0.nextIndex = 3
+	ret = n.replicateLogsTo(0)
+	if !ret {
+		t.Error("replicateLogsTo should replicate snapshot but it didn't")
+	}
+	lastISReq := peer0.proxy.(*PeerProxyMock).expectISCall()
+	if lastISReq == nil {
+		t.Error("replicateLogsTo replicate snapshot with a nil request")
+	}
+	if lastISReq.LeaderID != n.nodeID || lastISReq.Term != 3 ||
+		lastISReq.File != "snapshot" || lastISReq.SnapshotIndex != 3 ||
+		lastISReq.SnapshotTerm != 2 {
+		t.Error("wrong info in SnapshotRequest")
+	}
+
+	// nextIndex is smaller than snapshotIndex
+	logMgr.snapshotIndex = 3
+	logMgr.snapshotTerm = 2
+	logMgr.lastSnapshotFile = "snapshotsmaller"
+	peer0.nextIndex = 2
+	ret = n.replicateLogsTo(0)
+	if !ret {
+		t.Error("replicateLogsTo should replicate snapshot but it didn't")
+	}
+	lastISReq = peer0.proxy.(*PeerProxyMock).expectISCall()
+	if lastISReq == nil {
+		t.Error("replicateLogsTo replicate snapshot with a nil request")
+	}
+	if lastISReq.LeaderID != n.nodeID || lastISReq.Term != 3 ||
+		lastISReq.File != "snapshotsmaller" || lastISReq.SnapshotIndex != 3 ||
+		lastISReq.SnapshotTerm != 2 {
+		t.Error("wrong info in SnapshotRequest")
 	}
 }
 
