@@ -15,7 +15,7 @@ var errorInvalidPeerNodeID = errors.New("node in peers has invalid node IDs")
 // nodeID: id for current node
 // port: port for current node
 // peers: info for all other nodes
-func StartRaftKVStore(nodeID int, port string, peers map[int]raft.PeerInfo) error {
+func StartRaftKVStore(nodeID int, port string, peers map[int]raft.NodeInfo) error {
 	size := len(peers) + 1
 	if size == 1 {
 		return errorInvalidPeers
@@ -40,7 +40,7 @@ func StartRaftKVStore(nodeID int, port string, peers map[int]raft.PeerInfo) erro
 	return nil
 }
 
-func validateNodeIDs(nodeID int, peers map[int]raft.PeerInfo) error {
+func validateNodeIDs(nodeID int, peers map[int]raft.NodeInfo) error {
 	if _, found := peers[nodeID]; found {
 		return errorCurrentNodeInPeers
 	}

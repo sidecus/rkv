@@ -27,7 +27,7 @@ type KVPeerClient struct {
 var KVPeerClientFactory = &KVPeerClient{}
 
 // NewPeerProxy factory method to create a new proxy
-func (proxy *KVPeerClient) NewPeerProxy(info raft.PeerInfo) raft.IPeerProxy {
+func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 	conn, err := grpc.Dial(info.Endpoint, grpc.WithInsecure())
 	if err != nil {
 		// Our RPC connection is nonblocking so should not be expecting an error here
