@@ -2,8 +2,13 @@ package kvstore
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -49,6 +54,53 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 	}
 
 	return fromRaftRVReply(resp), nil
+}
+
+// InstallSnapshot installs snapshot on the target node
+func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
+	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
+	var sr *raft.SnapshotRequest
+	var f *os.File
+
+	for {
+		reqChunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		// Create file if not yet
+		if f == nil {
+			if sr, err = s.createSnapshot(reqChunk); err != nil {
+				return err
+			}
+
+			if f, err = os.Create(sr.File); err != nil {
+				return err
+			}
+			defer f.Close()
+		}
+
+		// Write data
+		if _, err = f.Write(reqChunk.Data); err != nil {
+			return err
+		}
+	}
+
+	if sr == nil {
+		return errors.New("empty snapshot received")
+	}
+
+	// close file before installing
+	f.Close()
+
+	var resp *raft.AppendEntriesReply
+	var err error
+	if resp, err = s.node.InstallSnapshot(sr); err != nil {
+		return err
+	}
+	return stream.SendAndClose(fromRaftAEReply(resp))
 }
 
 // Set sets a value in the kv store
@@ -109,4 +161,18 @@ func (s *RPCServer) Start(port string) {
 func (s *RPCServer) Stop() {
 	s.server.Stop()
 	s.wg.Wait()
+}
+
+// Create snapshot
+func (s *RPCServer) createSnapshot(req *pb.SnapshotRequest) (*raft.SnapshotRequest, error) {
+	sr := toRaftSnapshotRequest(req)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	sr.File = filepath.Join(cwd, fmt.Sprintf("LeaderNode%d_%d_%d.rkvsnapshot", req.LeaderID, req.SnapshotIndex, req.SnapshotTerm))
+
+	return sr, nil
 }

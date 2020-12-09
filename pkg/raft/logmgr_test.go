@@ -220,7 +220,7 @@ func TestCommit(t *testing.T) {
 	lm.ProcessLogs(-1, -1, entries)
 
 	// try commit to a much larger index
-	ret := lm.Commit(3)
+	ret, _ := lm.Commit(3)
 	if !ret {
 		t.Error("commit to larger index should commit to last log entry correctly")
 	}
@@ -232,7 +232,7 @@ func TestCommit(t *testing.T) {
 	}
 
 	// commit again does nothing
-	ret = lm.Commit(5)
+	ret, _ = lm.Commit(5)
 	if ret {
 		t.Error("commit should be idempotent, and return false on second try")
 	}

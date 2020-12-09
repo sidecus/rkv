@@ -35,6 +35,16 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+// SnapshotRequest reprents a chunk of snapshot
+type SnapshotRequest struct {
+	Term          int
+	LeaderID      int
+	SnapshotIndex int
+	SnapshotTerm  int
+	// below field differs from the RPC request which is a byte array
+	File string
+}
+
 // GetRequest is used for an get operation
 type GetRequest struct {
 	Params []interface{}

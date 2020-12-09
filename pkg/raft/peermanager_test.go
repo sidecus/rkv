@@ -8,6 +8,8 @@ func (proxy *testPeerProxy) AppendEntries(req *AppendEntriesRequest, callback fu
 
 }
 func (proxy *testPeerProxy) RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
+}
+func (proxy *testPeerProxy) InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply)) {
 
 }
 
@@ -44,6 +46,8 @@ func (tpm *testPeerManager) RequestVote(nodeID int, req *RequestVoteRequest, cal
 }
 func (tpm *testPeerManager) BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
 
+}
+func (tpm *testPeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply)) {
 }
 func (tpm *testPeerManager) Get(nodeID int, req *GetRequest) (*GetReply, error) {
 	return nil, nil

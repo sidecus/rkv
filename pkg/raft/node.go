@@ -32,6 +32,7 @@ type INodeRPCProvider interface {
 	// Raft
 	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
 	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
+	InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error)
 
 	// Data related
 	Get(*GetRequest) (*GetReply, error)
@@ -120,63 +121,6 @@ func (n *node) Stop() {
 	defer n.mu.Unlock()
 
 	n.timer.Stop()
-}
-
-// AppendEntries handles raft RPC AE calls
-func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
-
-	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
-
-	lastMatchIndex, prevMatch := -1, false
-	if req.Term >= n.currentTerm {
-		// only process logs when term is valid
-		prevMatch = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
-		if prevMatch {
-			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
-			lastMatchIndex = n.logMgr.LastIndex()
-			n.commitTo(req.LeaderCommit)
-		}
-	}
-
-	return &AppendEntriesReply{
-		Term:      n.currentTerm,
-		NodeID:    n.nodeID,
-		LeaderID:  n.currentLeader,
-		Success:   prevMatch,
-		LastMatch: lastMatchIndex, // this is only meaningful when Success is true
-	}, nil
-}
-
-// RequestVote handles raft RPC RV calls
-func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// Here is what the paper says (5.2 and 5.4):
-	// 1. if req.Term > currentTerm, convert to follower state (reset votedFor)
-	// 2. if req.Term < currentTerm deny vote
-	// 3. if req.Term >= currentTerm, and if votedFor is null or candidateId, and logs are up to date, grant vote
-	// The req.Term == currentTerm situation AFAIK can only happen when we receive a duplicate RV request
-	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
-	voteGranted := false
-	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
-		if req.LastLogIndex >= n.logMgr.LastIndex() && req.LastLogTerm >= n.logMgr.LastTerm() {
-			n.votedFor = req.CandidateID
-			voteGranted = true
-			util.WriteInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
-		}
-	}
-
-	return &RequestVoteReply{
-		Term:        n.currentTerm,
-		NodeID:      n.nodeID,
-		VotedTerm:   req.Term,
-		VoteGranted: voteGranted,
-	}, nil
 }
 
 // Get gets values from state machine, no need to proxy
@@ -271,8 +215,11 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
-	if n.logMgr.Commit(targetCommitIndex) {
+	if newCommit, newSnapshot := n.logMgr.Commit(targetCommitIndex); newCommit {
 		util.WriteInfo("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
+		if newSnapshot {
+			util.WriteInfo("T%d: Node%d created new snapshot L%d_T%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotIndex(), n.logMgr.SnapshotTerm())
+		}
 	}
 }
 

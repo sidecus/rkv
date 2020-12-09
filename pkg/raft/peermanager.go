@@ -23,6 +23,7 @@ type IPeerProxy interface {
 	// Raft related
 	AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
+	InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply))
 
 	// Data related
 	Get(req *GetRequest) (*GetReply, error)
@@ -41,6 +42,7 @@ type IPeerManager interface {
 	BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply))
 	BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
+	InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply))
 	Get(nodeID int, req *GetRequest) (*GetReply, error)
 	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
 }
@@ -89,6 +91,15 @@ func (mgr *PeerManager) BroadcastAppendEntries(req *AppendEntriesRequest, callba
 	for _, peer := range mgr.Peers {
 		mgr.AppendEntries(peer.NodeID, req, callback)
 	}
+}
+
+// InstallSnapshot installs a snapshot on the target node
+func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply)) {
+	peer := mgr.getPeer(nodeID)
+
+	go func() {
+		peer.proxy.InstallSnapshot(req, callback)
+	}()
 }
 
 // RequestVote handles raft RPC RV calls to a peer nodes

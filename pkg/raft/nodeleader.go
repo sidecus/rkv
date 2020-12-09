@@ -41,13 +41,21 @@ func (n *node) replicateLogsTo(targetNodeID int) {
 		return
 	}
 
-	// there are logs to replicate, create AE request and send
-	req := n.createAERequest(target.nextIndex, maxAppendEntriesCount)
-	minIdx := req.Entries[0].Index
-	maxIdx := req.Entries[len(req.Entries)-1].Index
-	util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+	if target.nextIndex <= n.logMgr.SnapshotIndex() {
+		// Send snapshot
+		req := n.createSnapshotRequest()
+		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
 
-	n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.InstallSnapshot(target.nodeID, req, n.handleAppendEntriesReply)
+	} else {
+		// there are logs to replicate, create AE request and send
+		req := n.createAERequest(target.nextIndex, maxAppendEntriesCount)
+		minIdx := req.Entries[0].Index
+		maxIdx := req.Entries[len(req.Entries)-1].Index
+		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+
+		n.peerMgr.AppendEntries(target.nodeID, req, n.handleAppendEntriesReply)
+	}
 }
 
 // handleAppendEntriesReply handles append entries reply. Need locking since this will be
@@ -121,4 +129,14 @@ func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
 	}
 
 	return req
+}
+
+func (n *node) createSnapshotRequest() *SnapshotRequest {
+	return &SnapshotRequest{
+		Term:          n.currentTerm,
+		LeaderID:      n.nodeID,
+		SnapshotIndex: n.logMgr.SnapshotIndex(),
+		SnapshotTerm:  n.logMgr.SnapshotTerm(),
+		File:          n.logMgr.SnapshotFile(),
+	}
 }

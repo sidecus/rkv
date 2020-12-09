@@ -9,7 +9,7 @@ import (
 )
 
 // TODO[sidecus]: This is for easy local testing
-const snapshotEntriesCount = 1
+const snapshotEntriesCount = 5
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -23,12 +23,16 @@ type ILogManager interface {
 	LastIndex() int
 	LastTerm() int
 	CommitIndex() int
+	SnapshotIndex() int
+	SnapshotTerm() int
+	SnapshotFile() string
 	GetLogEntry(index int) LogEntry
 	GetLogEntries(start int, count int) (entries []LogEntry, prevIndex int, prevTerm int)
 
 	ProcessCmd(cmd StateMachineCmd, term int)
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
-	Commit(targetIndex int) bool
+	Commit(targetIndex int) (newCommit bool, newSnapshot bool)
+	InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error
 
 	// proxy to state machine
 	IValueGetter
@@ -93,6 +97,21 @@ func (lm *LogManager) CommitIndex() int {
 	return lm.commitIndex
 }
 
+// SnapshotIndex returns the recent snapshot's last included index (-1 otherwise)
+func (lm *LogManager) SnapshotIndex() int {
+	return lm.snapshotIndex
+}
+
+// SnapshotTerm returns the recent snapshot's last included term (-1 otherwise)
+func (lm *LogManager) SnapshotTerm() int {
+	return lm.snapshotTerm
+}
+
+// SnapshotFile returns the recent snapshot file (string zero value otherwise)
+func (lm *LogManager) SnapshotFile() string {
+	return lm.lastSnapshotFile
+}
+
 // GetLogEntry returns log entry for the given index
 func (lm *LogManager) GetLogEntry(index int) LogEntry {
 	if index <= lm.snapshotIndex || index > lm.LastIndex() {
@@ -155,6 +174,7 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 	conflictIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
 	toAppend := entries[conflictIndex-(prevLogIndex+1):]
 	lm.logs, _, _ = lm.GetLogEntries(lm.snapshotIndex+1, conflictIndex)
+
 	// appendLogs adjusts lastIndex accordingly
 	lm.appendLogs(toAppend)
 
@@ -163,12 +183,15 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 
 // Commit tries to logs up to the target index
 // returns true if anything is committed
-func (lm *LogManager) Commit(targetIndex int) bool {
+func (lm *LogManager) Commit(targetIndex int) (newCommit bool, newSnapshot bool) {
 	// cap to lastIndex
 	targetIndex = util.Min(targetIndex, lm.lastIndex)
 	if targetIndex <= lm.commitIndex {
-		return false // nothing more to commit
+		// nothing to commit
+		return
 	}
+
+	newCommit = true
 
 	// Set new commit index and apply commands to state machine if needed
 	lm.commitIndex = targetIndex
@@ -181,10 +204,14 @@ func (lm *LogManager) Commit(targetIndex int) bool {
 
 	// take snapshot if needed
 	if lm.lastApplied-lm.snapshotIndex > snapshotEntriesCount {
-		lm.TakeSnapshot()
+		if err := lm.TakeSnapshot(); err != nil {
+			util.WriteError("Snapshot failure: %s", err)
+		} else {
+			newSnapshot = true
+		}
 	}
 
-	return true
+	return
 }
 
 // TakeSnapshot takes a snap shot and saves it to a file
