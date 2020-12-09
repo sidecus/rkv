@@ -1,8 +1,57 @@
 package raft
 
 import (
+	"os"
 	"testing"
 )
+
+func TestNewNode(t *testing.T) {
+	tempDir := os.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatal("Changing working directory to temp dir failed. Test case cannot continue")
+	}
+
+	peerCount := 2
+	nodeID := peerCount // last node
+	peers := createTestPeerInfo(peerCount)
+	n := NewNode(nodeID, peers, &testStateMachine{}, &testPeerFactory{}).(*node)
+
+	if n.nodeID != nodeID {
+		t.Error("Node created with invalid node ID")
+	}
+
+	if n.clusterSize != peerCount+1 {
+		t.Error("Node created with invalid clustersize")
+	}
+
+	if n.nodeState != Follower {
+		t.Error("Node created with invalid starting state")
+	}
+
+	if n.currentTerm != 0 {
+		t.Error("Node created with invalid starting term")
+	}
+
+	if n.currentLeader != -1 {
+		t.Error("Node created with invalid current leader")
+	}
+
+	if n.votedFor != -1 {
+		t.Error("Node created with invalid votedFor")
+	}
+
+	if len(n.followers) != peerCount {
+		t.Error("Node created with invalid number of followers")
+	}
+
+	if len(n.votes) != 0 {
+		t.Error("Node created with invalid votes map")
+	}
+
+	if n.logMgr.(*LogManager).snapshotPath != tempDir {
+		t.Error("Node created with incorrect snapshotPath")
+	}
+}
 
 func TestNodeSetTerm(t *testing.T) {
 	n := &node{
@@ -75,17 +124,17 @@ func TestEnterCandidateState(t *testing.T) {
 }
 
 func TestEnterLeaderState(t *testing.T) {
-	follower99 := &followerIndex{
+	follower99 := &fStatus{
 		nodeID:     99,
 		nextIndex:  30,
 		matchIndex: 20,
 	}
-	follower105 := &followerIndex{
+	follower105 := &fStatus{
 		nodeID:     105,
 		nextIndex:  100,
 		matchIndex: 70,
 	}
-	followerIndicies := make(map[int]*followerIndex)
+	followerIndicies := make(map[int]*fStatus)
 	followerIndicies[99] = follower99
 	followerIndicies[105] = follower105
 
@@ -168,7 +217,7 @@ func TestLeaderCommit(t *testing.T) {
 		lastApplied: -111,
 	}
 	followers := createTestFollowers(2)
-	logMgr := NewLogMgr(sm).(*LogManager)
+	logMgr := NewLogMgr(100, sm, "").(*LogManager)
 
 	followers[0].nextIndex = 2
 	followers[0].matchIndex = 1
@@ -213,7 +262,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	sm := &testStateMachine{
 		lastApplied: -111,
 	}
-	logMgr := NewLogMgr(sm).(*LogManager)
+	logMgr := NewLogMgr(100, sm, "").(*LogManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,
@@ -258,19 +307,19 @@ func TestReplicateLogsTo(t *testing.T) {
 	}
 }
 
-func TestWonMajorityVotes(t *testing.T) {
+func TestWonElection(t *testing.T) {
 	n := &node{}
 	n.clusterSize = 3
 	n.votes = make(map[int]bool)
 
 	n.votes[0] = true
-	if n.wonMajorityVotes() {
-		t.Error("wonMajorityVotes should return false on 1 vote out of 3")
+	if n.wonElection() {
+		t.Error("wonElection should return false on 1 vote out of 3")
 	}
 
 	n.votes[2] = true
-	if !n.wonMajorityVotes() {
-		t.Error("wonMajorityVotes should return true on 2 votes out of 3")
+	if !n.wonElection() {
+		t.Error("wonElection should return true on 2 votes out of 3")
 	}
 
 }

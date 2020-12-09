@@ -6,7 +6,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-// PeerInfo contains info for a peer node
+// PeerInfo contains info for a peer node including id and endpoint
 type PeerInfo struct {
 	NodeID   int
 	Endpoint string
@@ -23,6 +23,7 @@ type IPeerProxy interface {
 	// Raft related
 	AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
+	InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply))
 
 	// Data related
 	Get(req *GetRequest) (*GetReply, error)
@@ -31,7 +32,7 @@ type IPeerProxy interface {
 
 // Peer contains information for a raft peer
 type Peer struct {
-	info  PeerInfo
+	PeerInfo
 	proxy IPeerProxy
 }
 
@@ -41,6 +42,7 @@ type IPeerManager interface {
 	BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply))
 	BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
+	InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply))
 	Get(nodeID int, req *GetRequest) (*GetReply, error)
 	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
 }
@@ -64,11 +66,9 @@ func NewPeerManager(peers map[int]PeerInfo, factory IPeerProxyFactory) IPeerMana
 	}
 
 	for _, info := range peers {
-		proxy := factory.NewPeerProxy(info)
-
 		mgr.Peers[info.NodeID] = Peer{
-			info:  info,
-			proxy: proxy,
+			PeerInfo: info,
+			proxy:    factory.NewPeerProxy(info),
 		}
 	}
 
@@ -89,8 +89,17 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, cal
 func (mgr *PeerManager) BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
 	// send request to all peers
 	for _, peer := range mgr.Peers {
-		mgr.AppendEntries(peer.info.NodeID, req, callback)
+		mgr.AppendEntries(peer.NodeID, req, callback)
 	}
+}
+
+// InstallSnapshot installs a snapshot on the target node
+func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply)) {
+	peer := mgr.getPeer(nodeID)
+
+	go func() {
+		peer.proxy.InstallSnapshot(req, callback)
+	}()
 }
 
 // RequestVote handles raft RPC RV calls to a peer nodes
@@ -104,7 +113,7 @@ func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, callbac
 // BroadcastRequestVote handles raft RPC RV calls to all peer nodes
 func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
 	for _, peer := range mgr.Peers {
-		mgr.RequestVote(peer.info.NodeID, req, callback)
+		mgr.RequestVote(peer.NodeID, req, callback)
 	}
 }
 

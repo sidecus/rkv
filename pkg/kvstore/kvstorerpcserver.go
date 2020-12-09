@@ -2,8 +2,13 @@ package kvstore
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -49,6 +54,49 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 	}
 
 	return fromRaftRVReply(resp), nil
+}
+
+// InstallSnapshot installs snapshot on the target node
+func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
+	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
+	var sr *raft.SnapshotRequest
+	var file *os.File
+
+	for {
+		reqChunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		// Create file if not yet
+		if file == nil {
+			if sr, file, err = s.generateSnapshotFileName(reqChunk); err != nil {
+				return err
+			}
+
+			defer file.Close()
+		}
+
+		// Write data
+		if _, err = file.Write(reqChunk.Data); err != nil {
+			return err
+		}
+	}
+
+	if sr == nil {
+		return errors.New("empty snapshot received")
+	}
+
+	// close file before installing
+	file.Close()
+	var resp *raft.AppendEntriesReply
+	var err error
+	if resp, err = s.node.InstallSnapshot(sr); err != nil {
+		return err
+	}
+	return stream.SendAndClose(fromRaftAEReply(resp))
 }
 
 // Set sets a value in the kv store
@@ -109,4 +157,25 @@ func (s *RPCServer) Start(port string) {
 func (s *RPCServer) Stop() {
 	s.server.Stop()
 	s.wg.Wait()
+}
+
+// generateSnapshotFileName converts the request to raft request, and generates snapshot file path and name
+func (s *RPCServer) generateSnapshotFileName(req *pb.SnapshotRequest) (*raft.SnapshotRequest, *os.File, error) {
+	sr := toRaftSnapshotRequest(req)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Generate file name
+	sr.File = filepath.Join(cwd, fmt.Sprintf("LeaderNode%d_%d_%d.rkvsnapshot", req.LeaderID, req.SnapshotIndex, req.SnapshotTerm))
+
+	// Create file
+	var f *os.File
+	if f, err = os.Create(sr.File); err != nil {
+		return nil, nil, err
+	}
+
+	return sr, f, nil
 }

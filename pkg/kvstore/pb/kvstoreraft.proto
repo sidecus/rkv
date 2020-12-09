@@ -13,6 +13,8 @@ service KVStoreRaft {
   rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesReply) {}
   // RequestVote
   rpc RequestVote (RequestVoteRequest) returns (RequestVoteReply) {}
+  // InstallSnapshot - note we are returning AppendEntriesReply since this is a special kind of AppendEntries
+  rpc InstallSnapshot (stream SnapshotRequest) returns (AppendEntriesReply) {}
 
   // KVStore write operations, needs to be processed by raft node and tracked by logs
   rpc Set (SetRequest) returns (SetReply) {}
@@ -41,7 +43,7 @@ message LogEntry {
 // The append entry request
 message AppendEntriesRequest {
   int64 term = 1;
-  int64 leaderId = 2;
+  int64 leaderID = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
   int64 leaderCommit = 5;
@@ -60,7 +62,7 @@ message AppendEntriesReply {
 // The request vote request
 message RequestVoteRequest {
   int64 term = 1;
-  int64 candidateId = 2;
+  int64 candidateID = 2;
   int64 lastLogIndex = 3;
   int64 lastLogTerm = 4;
 }
@@ -71,6 +73,15 @@ message RequestVoteReply {
   int64 nodeID = 2;
   int64 votedTerm = 3;
   bool voteGranted = 4;
+}
+
+// Snapshot request - we'll stream this via gRPC
+message SnapshotRequest {
+  int64 term = 1;
+  int64 leaderID = 2;
+  int64 snapshotIndex = 3;
+  int64 snapshotTerm = 4;
+  bytes data = 5;
 }
 
 // SetRequest is the message used to set a value into kvstore

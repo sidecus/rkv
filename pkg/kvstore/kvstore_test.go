@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/sidecus/raft/pkg/raft"
@@ -73,5 +74,44 @@ func TestCmdDel(t *testing.T) {
 
 	if v, err := store.Get("a"); err != nil || v.(string) != "a" {
 		t.Error("Del deletes wrong entry")
+	}
+}
+
+func TestSerilization(t *testing.T) {
+	store := NewKVStore()
+
+	store.Apply(raft.StateMachineCmd{
+		CmdType: KVCmdSet,
+		Data: KVCmdData{
+			Key:   "a",
+			Value: "a",
+		},
+	})
+	store.Apply(raft.StateMachineCmd{
+		CmdType: KVCmdSet,
+		Data: KVCmdData{
+			Key:   "ab",
+			Value: "ab",
+		},
+	})
+
+	buf := &bytes.Buffer{}
+
+	if err := store.Serialize(buf); err != nil {
+		t.Fatalf("TakeSnapshot returned error %s", err)
+		return
+	}
+
+	newStore := NewKVStore()
+	if err := newStore.Deserialize(buf); err != nil {
+		t.Errorf("InstallSnapshot returned error %s", err)
+	}
+
+	if v, err := newStore.Get("a"); err != nil || v.(string) != "a" {
+		t.Error("InstallSnapshot returns different data")
+	}
+
+	if v, err := newStore.Get("ab"); err != nil || v.(string) != "ab" {
+		t.Error("InstallSnapshot returns different data")
 	}
 }

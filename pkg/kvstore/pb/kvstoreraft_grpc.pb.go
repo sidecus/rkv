@@ -21,6 +21,8 @@ type KVStoreRaftClient interface {
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesReply, error)
 	// RequestVote
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteReply, error)
+	// InstallSnapshot - note we are returning AppendEntriesReply since this is a special kind of AppendEntries
+	InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (KVStoreRaft_InstallSnapshotClient, error)
 	// KVStore write operations, needs to be processed by raft node and tracked by logs
 	Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*SetReply, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteReply, error)
@@ -52,6 +54,40 @@ func (c *kVStoreRaftClient) RequestVote(ctx context.Context, in *RequestVoteRequ
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *kVStoreRaftClient) InstallSnapshot(ctx context.Context, opts ...grpc.CallOption) (KVStoreRaft_InstallSnapshotClient, error) {
+	stream, err := c.cc.NewStream(ctx, &_KVStoreRaft_serviceDesc.Streams[0], "/pb.KVStoreRaft/InstallSnapshot", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &kVStoreRaftInstallSnapshotClient{stream}
+	return x, nil
+}
+
+type KVStoreRaft_InstallSnapshotClient interface {
+	Send(*SnapshotRequest) error
+	CloseAndRecv() (*AppendEntriesReply, error)
+	grpc.ClientStream
+}
+
+type kVStoreRaftInstallSnapshotClient struct {
+	grpc.ClientStream
+}
+
+func (x *kVStoreRaftInstallSnapshotClient) Send(m *SnapshotRequest) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *kVStoreRaftInstallSnapshotClient) CloseAndRecv() (*AppendEntriesReply, error) {
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	m := new(AppendEntriesReply)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (c *kVStoreRaftClient) Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*SetReply, error) {
@@ -89,6 +125,8 @@ type KVStoreRaftServer interface {
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesReply, error)
 	// RequestVote
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteReply, error)
+	// InstallSnapshot - note we are returning AppendEntriesReply since this is a special kind of AppendEntries
+	InstallSnapshot(KVStoreRaft_InstallSnapshotServer) error
 	// KVStore write operations, needs to be processed by raft node and tracked by logs
 	Set(context.Context, *SetRequest) (*SetReply, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteReply, error)
@@ -106,6 +144,9 @@ func (UnimplementedKVStoreRaftServer) AppendEntries(context.Context, *AppendEntr
 }
 func (UnimplementedKVStoreRaftServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteReply, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
+}
+func (UnimplementedKVStoreRaftServer) InstallSnapshot(KVStoreRaft_InstallSnapshotServer) error {
+	return status.Errorf(codes.Unimplemented, "method InstallSnapshot not implemented")
 }
 func (UnimplementedKVStoreRaftServer) Set(context.Context, *SetRequest) (*SetReply, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Set not implemented")
@@ -163,6 +204,32 @@ func _KVStoreRaft_RequestVote_Handler(srv interface{}, ctx context.Context, dec 
 		return srv.(KVStoreRaftServer).RequestVote(ctx, req.(*RequestVoteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
+}
+
+func _KVStoreRaft_InstallSnapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(KVStoreRaftServer).InstallSnapshot(&kVStoreRaftInstallSnapshotServer{stream})
+}
+
+type KVStoreRaft_InstallSnapshotServer interface {
+	SendAndClose(*AppendEntriesReply) error
+	Recv() (*SnapshotRequest, error)
+	grpc.ServerStream
+}
+
+type kVStoreRaftInstallSnapshotServer struct {
+	grpc.ServerStream
+}
+
+func (x *kVStoreRaftInstallSnapshotServer) SendAndClose(m *AppendEntriesReply) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *kVStoreRaftInstallSnapshotServer) Recv() (*SnapshotRequest, error) {
+	m := new(SnapshotRequest)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func _KVStoreRaft_Set_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -244,6 +311,12 @@ var _KVStoreRaft_serviceDesc = grpc.ServiceDesc{
 			Handler:    _KVStoreRaft_Get_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "InstallSnapshot",
+			Handler:       _KVStoreRaft_InstallSnapshot_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "pb/kvstoreraft.proto",
 }

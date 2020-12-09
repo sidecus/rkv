@@ -3,6 +3,8 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"time"
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
@@ -12,6 +14,7 @@ import (
 )
 
 const rpcTimeOut = time.Duration(150) * time.Millisecond
+const chunkSize = 8 * 1024
 
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 
@@ -63,6 +66,50 @@ func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback fu
 	if err == nil {
 		reply := toRaftRVReply(resp)
 		callback(reply)
+	}
+}
+
+// InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
+func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback func(*raft.AppendEntriesReply)) {
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut) // longer timeout
+	defer cancel()
+
+	stream, err := proxy.client.InstallSnapshot(ctx)
+	if err != nil {
+		//util.WriteError("Error opening gRPC snapshot stream. %s", err)
+		return
+	}
+
+	f, err := os.Open(req.File)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sr := fromRaftSnapshotRequest(req)
+	buf := make([]byte, chunkSize)
+	for {
+		n, err := f.Read(buf)
+		if err == io.EOF {
+			// done sending
+			break
+		} else if err != nil {
+			//util.WriteError("Error reading file. %s", err)
+			return
+		}
+
+		sr.Data = buf[:n]
+		if err := stream.Send(sr); err != nil {
+			//util.WriteError("Error sending shapshot chunk. %s", err)
+			return
+		}
+	}
+
+	if resp, err := stream.CloseAndRecv(); err == nil {
+		reply := toRaftAEReply(resp)
+		callback(reply)
+	} else {
+		//util.WriteError("Error receiving snapshot reply. %s", err)
 	}
 }
 

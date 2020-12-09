@@ -30,7 +30,7 @@ func toRaftAERequest(req *pb.AppendEntriesRequest) *raft.AppendEntriesRequest {
 
 	ae := &raft.AppendEntriesRequest{
 		Term:         int(req.Term),
-		LeaderID:     int(req.LeaderId),
+		LeaderID:     int(req.LeaderID),
 		PrevLogIndex: int(req.PrevLogIndex),
 		PrevLogTerm:  int(req.PrevLogTerm),
 		LeaderCommit: int(req.LeaderCommit),
@@ -61,7 +61,7 @@ func fromRaftAERequest(req *raft.AppendEntriesRequest) *pb.AppendEntriesRequest 
 
 	ae := &pb.AppendEntriesRequest{
 		Term:         int64(req.Term),
-		LeaderId:     int64(req.LeaderID),
+		LeaderID:     int64(req.LeaderID),
 		PrevLogIndex: int64(req.PrevLogIndex),
 		PrevLogTerm:  int64(req.PrevLogTerm),
 		LeaderCommit: int64(req.LeaderCommit),
@@ -94,7 +94,7 @@ func fromRaftAEReply(resp *raft.AppendEntriesReply) *pb.AppendEntriesReply {
 func toRaftRVRequest(req *pb.RequestVoteRequest) *raft.RequestVoteRequest {
 	rv := &raft.RequestVoteRequest{
 		Term:         int(req.Term),
-		CandidateID:  int(req.CandidateId),
+		CandidateID:  int(req.CandidateID),
 		LastLogIndex: int(req.LastLogIndex),
 		LastLogTerm:  int(req.LastLogTerm),
 	}
@@ -105,7 +105,7 @@ func toRaftRVRequest(req *pb.RequestVoteRequest) *raft.RequestVoteRequest {
 func fromRaftRVRequest(req *raft.RequestVoteRequest) *pb.RequestVoteRequest {
 	rv := &pb.RequestVoteRequest{
 		Term:         int64(req.Term),
-		CandidateId:  int64(req.CandidateID),
+		CandidateID:  int64(req.CandidateID),
 		LastLogIndex: int64(req.LastLogIndex),
 		LastLogTerm:  int64(req.LastLogTerm),
 	}
@@ -128,6 +128,29 @@ func fromRaftRVReply(resp *raft.RequestVoteReply) *pb.RequestVoteReply {
 		Term:        int64(resp.Term),
 		VotedTerm:   int64(resp.VotedTerm),
 		VoteGranted: resp.VoteGranted,
+	}
+}
+
+// Converts a gRPC snapshot request to our own format
+// Snapshot file is left blank, need to be filled by the caller
+func toRaftSnapshotRequest(req *pb.SnapshotRequest) *raft.SnapshotRequest {
+	return &raft.SnapshotRequest{
+		Term:          int(req.Term),
+		LeaderID:      int(req.LeaderID),
+		SnapshotIndex: int(req.SnapshotIndex),
+		SnapshotTerm:  int(req.SnapshotTerm),
+	}
+}
+
+// This initiazes a gRPC snapshot request from the rkv request.
+// Note it doesn't fill in the data part - that should be done by the proxy by streaming req.File
+func fromRaftSnapshotRequest(req *raft.SnapshotRequest) *pb.SnapshotRequest {
+	return &pb.SnapshotRequest{
+		Term:          int64(req.Term),
+		LeaderID:      int64(req.LeaderID),
+		SnapshotIndex: int64(req.SnapshotIndex),
+		SnapshotTerm:  int64(req.SnapshotTerm),
+		Data:          []byte{},
 	}
 }
 
