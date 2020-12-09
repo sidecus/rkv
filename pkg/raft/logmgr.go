@@ -8,8 +8,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-// TODO[sidecus]: This is for easy local testing
-const snapshotEntriesCount = 5
+const snapshotEntriesCount = 100
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
