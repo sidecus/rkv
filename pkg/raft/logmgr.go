@@ -8,7 +8,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 100
+const snapshotEntriesCount = 1000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -222,7 +222,7 @@ func (lm *LogManager) TakeSnapshot() error {
 	index := lm.lastApplied
 	term := lm.getLogEntryTerm(index)
 
-	name := fmt.Sprintf("Node%d_%d_%d.rkvsnapshot", lm.nodeID, index, term)
+	name := fmt.Sprintf("Node%d_%d_%d_local.rkvsnapshot", lm.nodeID, index, term)
 	snapshotFile := filepath.Join(lm.snapshotPath, name)
 	f, err := os.Create(snapshotFile)
 	if err != nil {

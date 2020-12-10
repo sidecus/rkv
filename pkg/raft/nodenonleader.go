@@ -87,15 +87,22 @@ func (n *node) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error
 	success := false
 	lastMatchIndex := -1
 	if req.Term >= n.currentTerm {
-		// only process logs when term is valid
-		util.WriteInfo("T%d: Node%d installing snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
-		err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
-		if err == nil {
+		// TODO[sidecus]: test case for the if branch
+		if n.logMgr.SnapshotIndex() == req.SnapshotIndex && n.logMgr.SnapshotTerm() == req.SnapshotTerm {
+			util.WriteInfo("T%d: Node%d ignoring already installed snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
 			success = true
 			lastMatchIndex = req.SnapshotIndex
-			util.WriteInfo("T%d: Snapshot installed.\n", n.currentTerm)
 		} else {
-			util.WriteError("T%d: Install snapshot failed. %s\n", n.currentTerm, err)
+			// only process logs when term is valid
+			util.WriteInfo("T%d: Node%d installing snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
+			err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
+			if err == nil {
+				success = true
+				lastMatchIndex = req.SnapshotIndex
+				util.WriteInfo("T%d: Snapshot installed.\n", n.currentTerm)
+			} else {
+				util.WriteError("T%d: Install snapshot failed. %s\n", n.currentTerm, err)
+			}
 		}
 	}
 

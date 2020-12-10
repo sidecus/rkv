@@ -4,27 +4,27 @@ import "log"
 
 // Log levels
 const (
-	// levelError only
-	levelError = 1
-	// levelWarning and error
-	levelWarning = 2
-	// levelInfo, warning and error
-	levelInfo = 3
+	// LevelError only
+	LevelError = 1
+	// LevelWarning and error
+	LevelWarning = 2
+	// LevelInfo, warning and error
+	LevelInfo = 3
 	// All
-	levelTrace = 4
+	LevelTrace = 4
 )
 
 // raft logger and log level
 var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
-var logLevel = levelInfo
+var logLevel = LevelInfo
 
 // SetLogLevel sets log level
 func SetLogLevel(level int) {
-	if level < levelError {
-		level = levelError
+	if level < LevelError {
+		level = LevelError
 	}
-	if level > levelTrace {
-		level = levelTrace
+	if level > LevelTrace {
+		level = LevelTrace
 	}
 
 	logLevel = level
@@ -39,22 +39,22 @@ func WriteLog(level int, format string, v ...interface{}) {
 
 // WriteError writes an error log
 func WriteError(format string, v ...interface{}) {
-	WriteLog(levelError, format, v...)
+	WriteLog(LevelError, format, v...)
 }
 
 // WriteWarning writes a warning log
 func WriteWarning(format string, v ...interface{}) {
-	WriteLog(levelWarning, format, v...)
+	WriteLog(LevelWarning, format, v...)
 }
 
 // WriteInfo writes a information
 func WriteInfo(format string, v ...interface{}) {
-	WriteLog(levelInfo, format, v...)
+	WriteLog(LevelInfo, format, v...)
 }
 
 // WriteTrace writes traces and debug information
 func WriteTrace(format string, v ...interface{}) {
-	WriteLog(levelTrace, format, v...)
+	WriteLog(LevelTrace, format, v...)
 }
 
 // Panicf is equivalent to l.Printf() followed by a call to panic().

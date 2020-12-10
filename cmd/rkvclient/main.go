@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -13,15 +14,16 @@ import (
 )
 
 const (
-	getMode = "get"
-	setMode = "set"
-	delMode = "del"
+	getMode       = "get"
+	setMode       = "set"
+	delMode       = "del"
+	benchMarkMode = "benchmark"
 )
 
 func main() {
-	mode, address, key, value := parseArgs()
+	mode := parseArgs()
 
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+	conn, err := grpc.Dial(mode.address, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -32,13 +34,15 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 
-	switch mode {
+	switch mode.name {
 	case getMode:
-		get(ctx, client, &pb.GetRequest{Key: key})
+		get(ctx, client, &pb.GetRequest{Key: mode.params.(string)})
 	case setMode:
-		set(ctx, client, &pb.SetRequest{Key: key, Value: value})
+		set(ctx, client, &pb.SetRequest{Key: mode.params.(keyValuePair).key, Value: mode.params.(keyValuePair).value})
 	case delMode:
-		delete(ctx, client, &pb.DeleteRequest{Key: key})
+		delete(ctx, client, &pb.DeleteRequest{Key: mode.params.(string)})
+	case benchMarkMode:
+		benchMark(ctx, client, mode.params.(int))
 	}
 }
 
@@ -69,43 +73,97 @@ func delete(ctx context.Context, client pb.KVStoreRaftClient, req *pb.DeleteRequ
 	fmt.Printf("Node%d - Delete Success: %v\n", reply.NodeID, reply.Success)
 }
 
-func parseArgs() (mode, address, key, value string) {
+func benchMark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
+	if times <= 0 {
+		fmt.Println("times for benchmark mode cannot be 0 or less")
+		os.Exit(1)
+	}
+
+	start := time.Now()
+	successCount := 0
+	var wg sync.WaitGroup
+	for i := 0; i < times; i++ {
+		wg.Add(1)
+		go func(i int) {
+			_, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
+			if err == nil {
+				successCount++
+			}
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Now().Sub(start)
+	fmt.Printf("Ran Set for %d times. Total time taken: %d ms, success count: %d", times, elapsed/time.Millisecond, successCount)
+}
+
+type runMode struct {
+	name    string
+	address string
+	params  interface{}
+}
+
+type keyValuePair struct {
+	key   string
+	value string
+}
+
+func parseArgs() runMode {
 	if len(os.Args) < 2 {
+		fmt.Println("Not enough arguments")
 		printUsage()
 		os.Exit(1)
 	}
 
-	mode = os.Args[1]
+	mode := runMode{
+		name: os.Args[1],
+	}
+
 	args := os.Args[2:]
-	switch mode {
+	switch mode.name {
 	case getMode:
-		getCmd := flag.NewFlagSet("get", flag.ExitOnError)
-		getCmd.StringVar(&address, "address", "", "rpc endpoint")
+		key := ""
+		getCmd := flag.NewFlagSet(getMode, flag.ExitOnError)
+		getCmd.StringVar(&mode.address, "address", "", "rpc endpoint")
 		getCmd.StringVar(&key, "key", "", "kv store key to get")
 		getCmd.Parse(args)
+		mode.params = key
 	case setMode:
-		setCmd := flag.NewFlagSet("set", flag.ExitOnError)
-		setCmd.StringVar(&address, "address", "", "rpc endpoint")
-		setCmd.StringVar(&key, "key", "", "kv store key to set")
-		setCmd.StringVar(&value, "value", "", "kv store value to set")
+		kvp := keyValuePair{}
+		setCmd := flag.NewFlagSet(setMode, flag.ExitOnError)
+		setCmd.StringVar(&mode.address, "address", "", "rpc endpoint")
+		setCmd.StringVar(&kvp.key, "key", "", "kv store key to set")
+		setCmd.StringVar(&kvp.value, "value", "", "kv store value to set")
 		setCmd.Parse(args)
+		mode.params = kvp
 	case delMode:
-		delCmd := flag.NewFlagSet("del", flag.ExitOnError)
-		delCmd.StringVar(&address, "address", "", "rpc endpoint")
+		key := ""
+		delCmd := flag.NewFlagSet(delMode, flag.ExitOnError)
+		delCmd.StringVar(&mode.address, "address", "", "rpc endpoint")
 		delCmd.StringVar(&key, "key", "", "kv store key to delete")
 		delCmd.Parse(args)
+		mode.params = key
+	case benchMarkMode:
+		times := 10000
+		benchMarkCmd := flag.NewFlagSet(benchMarkMode, flag.ExitOnError)
+		benchMarkCmd.StringVar(&mode.address, "address", "", "rpc endpoint")
+		benchMarkCmd.IntVar(&times, "times", 10000, "times to run")
+		benchMarkCmd.Parse(args)
+		mode.params = times
 	}
 
-	if address == "" || key == "" {
+	if mode.name == "" || mode.address == "" {
+		fmt.Println("unknown mode or address")
 		printUsage()
 		os.Exit(1)
 	}
 
-	return
+	return mode
 }
 
 func printUsage() {
 	fmt.Println("rkvclient set -address <address> -key <key> -value <value>")
 	fmt.Println("rkvclient get -address <address> -key <key>")
 	fmt.Println("rkvclient del -address <address> -key <key>")
+	fmt.Println("rkvclient benchmark -address <address> -times <times>")
 }

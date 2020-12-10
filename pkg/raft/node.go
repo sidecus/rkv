@@ -29,6 +29,9 @@ type INodeLifeCycleProvider interface {
 // INodeRPCProvider defines node functions used by RPC
 // These are invoked when an RPC request is received
 type INodeRPCProvider interface {
+	// Gets the node's id
+	NodeID() int
+
 	// Raft
 	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
 	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
@@ -99,6 +102,11 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 	n.timer = NewRaftTimer(n.onTimer)
 
 	return n
+}
+
+// NodeID gets the node's id
+func (n *node) NodeID() int {
+	return n.nodeID
 }
 
 // Start starts the node

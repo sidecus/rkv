@@ -169,7 +169,7 @@ func (s *RPCServer) generateSnapshotFileName(req *pb.SnapshotRequest) (*raft.Sna
 	}
 
 	// Generate file name
-	sr.File = filepath.Join(cwd, fmt.Sprintf("LeaderNode%d_%d_%d.rkvsnapshot", req.LeaderID, req.SnapshotIndex, req.SnapshotTerm))
+	sr.File = filepath.Join(cwd, fmt.Sprintf("Node%d_%d_%d_remote.rkvsnapshot", s.node.NodeID(), req.SnapshotIndex, req.SnapshotTerm))
 
 	// Create file
 	var f *os.File

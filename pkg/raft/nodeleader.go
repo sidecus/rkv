@@ -1,8 +1,10 @@
 package raft
 
-import "github.com/sidecus/raft/pkg/util"
+import (
+	"github.com/sidecus/raft/pkg/util"
+)
 
-const maxAppendEntriesCount = 5
+const maxAppendEntriesCount = 20
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
@@ -40,6 +42,14 @@ func (n *node) replicateLogsTo(targetNodeID int) bool {
 		// nothing to replicate
 		return false
 	}
+
+	// TODO[sidecus]: how to reduce leader's burden on duplicate replications?
+	// // precaution to avoid parallel replication to the same node
+	// counter := atomic.AddInt32(&follower.replicationCounter, 1)
+	// atomic.AddInt32(&follower.replicationCounter, -1)
+	// if counter > 1 {
+	// 	return false
+	// }
 
 	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot

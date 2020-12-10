@@ -2,6 +2,7 @@ package raft
 
 import (
 	"errors"
+	"sync/atomic"
 
 	"github.com/sidecus/raft/pkg/util"
 )
@@ -43,7 +44,8 @@ type IPeerProxyFactory interface {
 type Peer struct {
 	NodeInfo
 	followerStatus
-	proxy IPeerProxy
+	replicationCounter int32
+	proxy              IPeerProxy
 }
 
 // IFollowerStatusManager defines interfaces to manage follower status
@@ -153,7 +155,16 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, cal
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
-		peer.proxy.AppendEntries(req, callback)
+		// Only proceed if this is a heartbeat or there is no other replication in progress
+		if len(req.Entries) == 0 {
+			peer.proxy.AppendEntries(req, callback)
+		} else {
+			counter := atomic.AddInt32(&peer.replicationCounter, 1)
+			defer atomic.AddInt32(&peer.replicationCounter, -1)
+			if counter <= 1 {
+				peer.proxy.AppendEntries(req, callback)
+			}
+		}
 	}()
 }
 
@@ -170,7 +181,11 @@ func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, callba
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
-		peer.proxy.InstallSnapshot(req, callback)
+		counter := atomic.AddInt32(&peer.replicationCounter, 1)
+		defer atomic.AddInt32(&peer.replicationCounter, -1)
+		if counter <= 1 {
+			peer.proxy.InstallSnapshot(req, callback)
+		}
 	}()
 }
 
