@@ -42,7 +42,7 @@ func main() {
 	case delMode:
 		delete(ctx, client, &pb.DeleteRequest{Key: mode.params.(string)})
 	case benchMarkMode:
-		benchMark(ctx, client, mode.params.(int))
+		benchmark(ctx, client, mode.params.(int))
 	}
 }
 
@@ -73,7 +73,7 @@ func delete(ctx context.Context, client pb.KVStoreRaftClient, req *pb.DeleteRequ
 	fmt.Printf("Node%d - Delete Success: %v\n", reply.NodeID, reply.Success)
 }
 
-func benchMark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
+func benchmark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
 	if times <= 0 {
 		fmt.Println("times for benchmark mode cannot be 0 or less")
 		os.Exit(1)
@@ -96,7 +96,7 @@ func benchMark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
 	}
 	wg.Wait()
 	elapsed := time.Now().Sub(start)
-	fmt.Printf("Ran Set for %d times. Total time taken: %d ms, success count: %d", times, elapsed/time.Millisecond, successCount)
+	fmt.Printf("Ran Set for %d times.\nTotal time taken: %d ms\nSuccess count: %d\n", times, elapsed/time.Millisecond, successCount)
 }
 
 type runMode struct {

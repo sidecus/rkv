@@ -60,7 +60,6 @@ type IFollowerStatusManager interface {
 // A peer manager tracks peers' status as well as communicate with them
 type IPeerManager interface {
 	AppendEntries(nodeID int, req *AppendEntriesRequest, callback func(*AppendEntriesReply))
-	BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
 	RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply))
 	BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
 	InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply))
@@ -123,9 +122,11 @@ func (mgr *PeerManager) UpdateFollowerMatchIndex(nodeID int, matched bool, lastM
 	peer := mgr.GetPeer(nodeID)
 
 	if matched {
+		util.WriteTrace("Updating Node%d nextIndex. lastMatch %d", nodeID, lastMatch)
 		peer.nextIndex = lastMatch + 1
 		peer.matchIndex = lastMatch
 	} else {
+		util.WriteTrace("Decreasing Node%d nextIndex.", nodeID)
 		// prev entries don't match. decrement nextIndex.
 		// cap it to 0. It is meaningless when less than zero
 		peer.nextIndex = util.Max(0, peer.nextIndex-nextIndexFallbackStep)
@@ -166,14 +167,6 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, cal
 			}
 		}
 	}()
-}
-
-// BroadcastAppendEntries handles raft RPC AE calls to all peers (heartbeat)
-func (mgr *PeerManager) BroadcastAppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
-	// send request to all peers
-	for _, peer := range mgr.Peers {
-		mgr.AppendEntries(peer.NodeID, req, callback)
-	}
 }
 
 // InstallSnapshot installs a snapshot on the target node

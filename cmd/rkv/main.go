@@ -10,6 +10,7 @@ import (
 
 	"github.com/sidecus/raft/pkg/kvstore"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/util"
 )
 
 var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
@@ -17,9 +18,11 @@ var logger = log.New(log.Writer(), log.Prefix(), log.Flags())
 func main() {
 	nodeID := -1
 	addresses := ""
+	logLevel := 3
 
 	flag.IntVar(&nodeID, "nodeid", -1, "current node ID. 0 to n where n is total nodes")
 	flag.StringVar(&addresses, "addresses", "", "comma separated node addresses, ordered by nodeID")
+	flag.IntVar(&logLevel, "loglevel", 3, "log level. 1 - error, 2 - warning, 3 - info, 4 - traces, default 3")
 	flag.Parse()
 
 	addrArray := strings.Split(addresses, ",")
@@ -36,13 +39,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	util.SetLogLevel(logLevel)
+
 	runRPC(nodeID, port, addrArray)
 }
 
 func printUsage() {
-	fmt.Println("rkv -nodeid id -addresses node0address,node1address,node2addresses...")
-	fmt.Println("  id: 0 based current node ID, indexed into addresses to get local port")
-	fmt.Println("  addresses: comma separated, address should be in server:port format")
+	fmt.Println("rkv -nodeid id -addresses node0address,node1address,node2addresses... -loglevel 1-4")
+	fmt.Println("   -id: 0 based current node ID, indexed into addresses to get local port")
+	fmt.Println("   -addresses: comma separated server:port for all nodes")
+	fmt.Println("   -loglevel: number 1-4 (1 - error, 2 - warning, 3 - info, 4 - traces), default 3")
 }
 
 func runRPC(nodeID int, port string, addresses []string) {

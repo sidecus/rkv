@@ -14,8 +14,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-const rpcTimeOut = time.Duration(150) * time.Millisecond
-const chunkSize = 8 * 1024
+const rpcTimeOut = time.Duration(200) * time.Millisecond
+const snapshotRPCTimeout = rpcTimeOut * 3
+
+// We need to fine tune below value. If server is busy, a short timeout will cause unnecessary excessive rejection.
+const proxyRPCTimeout = rpcTimeOut * 10
+
+const snapshotChunkSize = 8 * 1024
 
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor Delete")
@@ -73,7 +78,7 @@ func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback fu
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback func(*raft.AppendEntriesReply)) {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut) // longer timeout
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
 	stream, err := proxy.client.InstallSnapshot(ctx)
@@ -89,7 +94,7 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 	defer f.Close()
 
 	sr := fromRaftSnapshotRequest(req)
-	buf := make([]byte, chunkSize)
+	buf := make([]byte, snapshotChunkSize)
 	for {
 		n, err := f.Read(buf)
 		if err == io.EOF {
@@ -155,7 +160,7 @@ func (proxy *KVPeerClient) executeSet(cmd *raft.StateMachineCmd) (*raft.ExecuteR
 
 	req := fromRaftSetRequest(cmd)
 
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	ctx, cancel := context.WithTimeout(context.Background(), proxyRPCTimeout)
 	defer cancel()
 
 	var resp *pb.SetReply
@@ -174,7 +179,7 @@ func (proxy *KVPeerClient) executeDelete(cmd *raft.StateMachineCmd) (*raft.Execu
 
 	req := fromRaftDeleteRequest(cmd)
 
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	ctx, cancel := context.WithTimeout(context.Background(), proxyRPCTimeout)
 	defer cancel()
 
 	var resp *pb.DeleteReply
