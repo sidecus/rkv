@@ -88,6 +88,8 @@ func benchMark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
 			_, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
 			if err == nil {
 				successCount++
+			} else {
+				fmt.Println(err)
 			}
 			wg.Done()
 		}(i)

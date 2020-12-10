@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -160,7 +161,7 @@ func (proxy *KVPeerClient) executeSet(cmd *raft.StateMachineCmd) (*raft.ExecuteR
 	var resp *pb.SetReply
 	var err error
 	if resp, err = proxy.client.Set(ctx, req); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error proxying Set request to leader. %s", err)
 	}
 
 	return toRaftSetReply(resp), nil
@@ -179,7 +180,7 @@ func (proxy *KVPeerClient) executeDelete(cmd *raft.StateMachineCmd) (*raft.Execu
 	var resp *pb.DeleteReply
 	var err error
 	if resp, err = proxy.client.Delete(ctx, req); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error proxying Del request to leader. %s", err)
 	}
 
 	return toRaftDeleteReply(resp), nil
