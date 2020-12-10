@@ -17,6 +17,7 @@ const rpcTimeOut = time.Duration(150) * time.Millisecond
 const chunkSize = 8 * 1024
 
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
+var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor Delete")
 
 // KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
 type KVPeerClient struct {
@@ -134,25 +135,52 @@ func (proxy *KVPeerClient) Get(req *raft.GetRequest) (*raft.GetReply, error) {
 
 // Execute runs a command via the leader
 func (proxy *KVPeerClient) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+	executeMap := make(map[int]func(*raft.StateMachineCmd) (*raft.ExecuteReply, error), 2)
+	executeMap[KVCmdSet] = proxy.executeSet
+	executeMap[KVCmdDel] = proxy.executeDelete
+
+	handler, ok := executeMap[cmd.CmdType]
+	if !ok {
+		return nil, errorInvalidExecuteRequest
+	}
+
+	return handler(cmd)
+}
+
+func (proxy *KVPeerClient) executeSet(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+	if cmd.CmdType != KVCmdSet {
+		util.Panicln("Wrong cmd passed to executeSet")
+	}
+
+	req := fromRaftSetRequest(cmd)
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
-	var reply *raft.ExecuteReply
+	var resp *pb.SetReply
 	var err error
-	if cmd.CmdType == KVCmdSet {
-		req := fromRaftSetRequest(cmd)
-		resp, errSet := proxy.client.Set(ctx, req)
-
-		reply = toRaftSetReply(resp)
-		err = errSet
-	} else {
-		req := fromRaftDeleteRequest(cmd)
-		resp, errDel := proxy.client.Delete(ctx, req)
-
-		reply = toRaftDeleteReply(resp)
-		err = errDel
+	if resp, err = proxy.client.Set(ctx, req); err != nil {
+		return nil, err
 	}
 
-	return reply, err
+	return toRaftSetReply(resp), nil
+}
+
+func (proxy *KVPeerClient) executeDelete(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+	if cmd.CmdType != KVCmdDel {
+		util.Panicln("Wrong cmd passed to executeDelete")
+	}
+
+	req := fromRaftDeleteRequest(cmd)
+
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	defer cancel()
+
+	var resp *pb.DeleteReply
+	var err error
+	if resp, err = proxy.client.Delete(ctx, req); err != nil {
+		return nil, err
+	}
+
+	return toRaftDeleteReply(resp), nil
 }
