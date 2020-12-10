@@ -158,12 +158,14 @@ func (lm *LogManager) ProcessCmd(cmd StateMachineCmd, term int) {
 }
 
 // ProcessLogs handles replicated logs from leader
-// returns true if we entries matching prevLogIndex/prevLogTerm, and if that's the case, log
-// entries are processed and appended as appropriate. Otherwise return false
+// Returns true if we entries matching prevLogIndex/prevLogTerm, and if that's the case, log
+// entries are processed and appended as appropriate. Note this happens even for heartbeats.
+// Otherwise return false
 func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) bool {
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
 	prevMatch := lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm)
+	util.WriteTrace("Match on prevIndex(%d) prevTerm(%d): %v", prevLogIndex, prevLogTerm, prevMatch)
 	if !prevMatch {
 		return false
 	}

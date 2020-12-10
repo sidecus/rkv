@@ -19,15 +19,13 @@ func (n *node) enterLeaderState() {
 
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
-	// create empty AE request
-	// TODO[sidecus]: shall we use lastindex+1 all the time for heartbeat?
-	// This can cause unnecessary nextIndex decrement.
-	// We might want to send different heratbeat based on nextIndex of different node
-	req := n.createAERequest(n.logMgr.LastIndex()+1, 0)
-	util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat\n", n.currentTerm, n.nodeID)
+	for _, peer := range n.peerMgr.GetAllPeers() {
+		req := n.createAERequest(peer.nextIndex, 0)
+		util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat to Node%d, prevIndex %d\n", n.currentTerm, n.nodeID, peer.NodeID, req.PrevLogIndex)
 
-	// send heart beat (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastAppendEntries(req, n.handleAppendEntriesReply)
+		// send heart beat (on different goroutines), response will be processed there
+		n.peerMgr.AppendEntries(peer.NodeID, req, n.handleAppendEntriesReply)
+	}
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
@@ -42,14 +40,6 @@ func (n *node) replicateLogsTo(targetNodeID int) bool {
 		// nothing to replicate
 		return false
 	}
-
-	// TODO[sidecus]: how to reduce leader's burden on duplicate replications?
-	// // precaution to avoid parallel replication to the same node
-	// counter := atomic.AddInt32(&follower.replicationCounter, 1)
-	// atomic.AddInt32(&follower.replicationCounter, -1)
-	// if counter > 1 {
-	// 	return false
-	// }
 
 	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot
@@ -129,6 +119,10 @@ func (n *node) leaderCommit() {
 
 // createAERequest creates an AppendEntriesRequest with proper log payload
 func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
+	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
+	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
+	// That scenario will only happen for heartbeats - and it's ok to change it to point to the first entry in the logs
+	nextIdx = util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
 	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, nextIdx+count)
 
 	req := &AppendEntriesRequest{

@@ -125,7 +125,7 @@ func TestProcessLogs(t *testing.T) {
 	lm := NewLogMgr(100, sm, "").(*LogManager)
 	lm.logs = make([]LogEntry, 5)
 	lm.lastIndex = 14
-	lm.lastTerm = 3
+	lm.lastTerm = 13
 	lm.snapshotIndex = 9
 	lm.snapshotTerm = 9
 	lm.logs[0] = LogEntry{Index: 10, Term: 11}
@@ -134,19 +134,28 @@ func TestProcessLogs(t *testing.T) {
 	lm.logs[3] = LogEntry{Index: 13, Term: 12}
 	lm.logs[4] = LogEntry{Index: 14, Term: 13}
 
-	// empty entries
+	// Nonmatching heartbeat
 	if lm.ProcessLogs(16, 15, make([]LogEntry, 0)) {
 		t.Error("ProcessLogs should return false on nonmatching prevIndex/prevTerm")
 	}
-	if lm.LastIndex() != 14 {
+	if lm.LastIndex() != 14 || lm.lastTerm != 13 {
 		t.Error("ProcessLogs should not modify lastIndex on nonmatching prev entry")
 	}
 
+	// Perfect Heartbeat
 	if !lm.ProcessLogs(14, 13, make([]LogEntry, 0)) {
 		t.Error("ProcessLogs should return true on matching prevIndex/prevTerm")
 	}
-	if lm.LastIndex() != 14 {
+	if lm.LastIndex() != 14 || lm.lastTerm != 13 {
 		t.Error("ProcessLogs should not modify lastIndex on empty entries")
+	}
+
+	// Heartbeat on old entry
+	if !lm.ProcessLogs(13, 12, make([]LogEntry, 0)) {
+		t.Error("ProcessLogs should return true on matching prevIndex/prevTerm")
+	}
+	if lm.LastIndex() != 13 || lm.lastTerm != 12 {
+		t.Error("ProcessLogs should truncate logs on heartbeat")
 	}
 
 	// entries are much newer than logs we have
@@ -154,16 +163,16 @@ func TestProcessLogs(t *testing.T) {
 	if lm.ProcessLogs(15, 14, entries) {
 		t.Error("ProcessLogs should return false on nonmatching prevIndex/prevTerm when entries is non empty")
 	}
-	if lm.LastIndex() != 14 {
+	if lm.LastIndex() != 13 {
 		t.Error("ProcessLogs should not modify logs for much newer logs")
 	}
 
 	// simple append
-	entries = generateTestEntries(14, 14)
-	if !lm.ProcessLogs(14, 13, entries) {
+	entries = generateTestEntries(13, 14)
+	if !lm.ProcessLogs(13, 12, entries) {
 		t.Error("ProcessLogs should return true on correct new logs")
 	}
-	if lm.LastIndex() != 16 || lm.lastTerm != 14 {
+	if lm.LastIndex() != 15 || lm.lastTerm != 14 {
 		t.Error("ProcessLogs should append correct new logs")
 	}
 
