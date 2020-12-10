@@ -202,7 +202,7 @@ func (lm *LogManager) Commit(targetIndex int) (newCommit bool, newSnapshot bool)
 	}
 
 	// take snapshot if needed
-	if lm.lastApplied-lm.snapshotIndex > snapshotEntriesCount {
+	if lm.lastApplied-lm.snapshotIndex >= snapshotEntriesCount {
 		if err := lm.TakeSnapshot(); err != nil {
 			util.WriteError("Snapshot failure: %s", err)
 		} else {
