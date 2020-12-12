@@ -48,8 +48,8 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votes map")
 	}
 
-	if n.logMgr.(*LogManager).snapshotPath != tempDir {
-		t.Error("Node created with incorrect snapshotPath")
+	if snapshotPath == "" {
+		t.Error("NewNode doesn't set snapshot path")
 	}
 }
 
@@ -210,7 +210,7 @@ func TestLeaderCommit(t *testing.T) {
 		lastApplied: -111,
 	}
 	peerMgr := createTestPeerManager(2)
-	logMgr := NewLogMgr(100, sm, "").(*LogManager)
+	logMgr := NewLogMgr(100, sm).(*LogManager)
 
 	peerMgr.GetPeer(0).nextIndex = 2
 	peerMgr.GetPeer(0).matchIndex = 1
@@ -255,7 +255,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	sm := &testStateMachine{
 		lastApplied: -111,
 	}
-	logMgr := NewLogMgr(100, sm, "").(*LogManager)
+	logMgr := NewLogMgr(100, sm).(*LogManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,

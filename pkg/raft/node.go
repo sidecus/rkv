@@ -83,6 +83,8 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		util.Panicf("Failed to get current working directory for snapshot. %s", err)
 	}
 
+	SetSnapshotPath(cwd)
+
 	n := &node{
 		mu:            sync.RWMutex{},
 		clusterSize:   size,
@@ -91,7 +93,7 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
-		logMgr:        NewLogMgr(nodeID, sm, cwd),
+		logMgr:        NewLogMgr(nodeID, sm),
 		peerMgr:       NewPeerManager(nodeID, peers, proxyFactory),
 		votes:         make(map[int]bool, size),
 	}

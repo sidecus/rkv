@@ -3,12 +3,9 @@ package kvstore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -16,6 +13,8 @@ import (
 	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
 )
+
+var errorEmptySnapshot = errors.New("empty snapshot received")
 
 // RPCServer is used to implement pb.KVStoreRPCServer
 type RPCServer struct {
@@ -58,44 +57,47 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 
 // InstallSnapshot installs snapshot on the target node
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
-	var sr *raft.SnapshotRequest
-	var file *os.File
+	var (
+		chunk *pb.SnapshotRequest
+		req   *raft.SnapshotRequest
+		resp  *raft.AppendEntriesReply
+		w     io.WriteCloser
+		err   error
+	)
 
 	for {
-		reqChunk, err := stream.Recv()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return err
-		}
-
-		// Create file if not yet
-		if file == nil {
-			if sr, file, err = s.generateSnapshotFileName(reqChunk); err != nil {
+		if chunk, err = stream.Recv(); err != nil {
+			if err == io.EOF {
+				break
+			} else {
 				return err
 			}
+		}
 
-			defer file.Close()
+		// Create snapshot file if not yet
+		if req == nil {
+			req = toRaftSnapshotRequest(chunk)
+			if req.File, w, err = raft.CreateRemoteSnapshotFile(req.LeaderID, req.SnapshotTerm, req.SnapshotIndex); err != nil {
+				return err
+			}
+			defer w.Close()
 		}
 
 		// Write data
-		if _, err = file.Write(reqChunk.Data); err != nil {
+		if _, err = w.Write(chunk.Data); err != nil {
 			return err
 		}
 	}
 
-	if sr == nil {
-		return errors.New("empty snapshot received")
+	if req == nil || w == nil {
+		return errorEmptySnapshot
 	}
 
-	// close file before installing
-	file.Close()
-	var resp *raft.AppendEntriesReply
-	var err error
-	if resp, err = s.node.InstallSnapshot(sr); err != nil {
+	w.Close() // close file before installing
+	if resp, err = s.node.InstallSnapshot(req); err != nil {
 		return err
 	}
+
 	return stream.SendAndClose(fromRaftAEReply(resp))
 }
 
@@ -157,25 +159,4 @@ func (s *RPCServer) Start(port string) {
 func (s *RPCServer) Stop() {
 	s.server.Stop()
 	s.wg.Wait()
-}
-
-// generateSnapshotFileName converts the request to raft request, and generates snapshot file path and name
-func (s *RPCServer) generateSnapshotFileName(req *pb.SnapshotRequest) (*raft.SnapshotRequest, *os.File, error) {
-	sr := toRaftSnapshotRequest(req)
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Generate file name
-	sr.File = filepath.Join(cwd, fmt.Sprintf("Node%d_%d_%d_remote.rkvsnapshot", s.node.NodeID(), req.SnapshotIndex, req.SnapshotTerm))
-
-	// Create file
-	var f *os.File
-	if f, err = os.Create(sr.File); err != nil {
-		return nil, nil, err
-	}
-
-	return sr, f, nil
 }
