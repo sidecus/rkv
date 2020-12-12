@@ -8,6 +8,8 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
+const maxAppendEntriesCount = 20
+
 // NodeState is the state of the node
 type NodeState int
 
@@ -19,12 +21,6 @@ const (
 	// Leader state
 	Leader = 3
 )
-
-// INodeLifeCycleProvider defines node lifecycle methods
-type INodeLifeCycleProvider interface {
-	Start()
-	Stop()
-}
 
 // INodeRPCProvider defines node functions used by RPC
 // These are invoked when an RPC request is received
@@ -48,7 +44,8 @@ type INode interface {
 	INodeRPCProvider
 
 	// Lifecycle
-	INodeLifeCycleProvider
+	Start()
+	Stop()
 }
 
 // errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
@@ -116,9 +113,8 @@ func (n *node) Start() {
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
 
-	n.timer.Start()
-
 	// Enter follower state
+	n.timer.Start()
 	n.enterFollowerState(n.nodeID, 0)
 	n.refreshTimer()
 }
@@ -177,18 +173,116 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 
 	if success {
 		return &ExecuteReply{NodeID: n.nodeID, Success: true}, nil
-	} else if leader == -1 {
-		return nil, errorNoLeaderAvailable
 	}
 
 	// proxy to leader instead, no lock needed
 	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
+	if leader == -1 {
+		return nil, errorNoLeaderAvailable
+	}
 	return n.peerMgr.Execute(leader, cmd)
 }
 
-// onTimer handles a timer event.
-// Action is based on node's current state.
-// This is run on the timer goroutine so we need lock
+// AppendEntries handles raft RPC AE calls
+func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
+
+	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
+
+	lastMatchIndex, prevMatch := -1, false
+	if req.Term >= n.currentTerm {
+		// only process logs when term is valid
+		prevMatch = n.logMgr.ProcessLogs(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+		if prevMatch {
+			// logs are catching up - at least matching up to n.logMgr.lastIndex. record it and try to commit
+			lastMatchIndex = n.logMgr.LastIndex()
+			n.commitTo(req.LeaderCommit)
+		}
+	}
+
+	return &AppendEntriesReply{
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   prevMatch,
+		LastMatch: lastMatchIndex, // this is only meaningful when Success is true
+	}, nil
+}
+
+// InstallSnapshot installs a snapshot
+func (n *node) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
+
+	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
+
+	success := false
+	lastMatchIndex := -1
+	if req.Term >= n.currentTerm {
+		// TODO[sidecus]: test case for the if branch
+		if n.logMgr.SnapshotIndex() == req.SnapshotIndex && n.logMgr.SnapshotTerm() == req.SnapshotTerm {
+			util.WriteInfo("T%d: Node%d ignoring already installed snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
+			success = true
+			lastMatchIndex = req.SnapshotIndex
+		} else {
+			// only process logs when term is valid
+			util.WriteInfo("T%d: Node%d installing snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
+			err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
+			if err == nil {
+				success = true
+				lastMatchIndex = req.SnapshotIndex
+				util.WriteInfo("T%d: Snapshot installed.\n", n.currentTerm)
+			} else {
+				util.WriteError("T%d: Install snapshot failed. %s\n", n.currentTerm, err)
+			}
+		}
+	}
+
+	return &AppendEntriesReply{
+		Term:      n.currentTerm,
+		NodeID:    n.nodeID,
+		LeaderID:  n.currentLeader,
+		Success:   success,
+		LastMatch: lastMatchIndex, // this is only meaningful when Success is true
+	}, nil
+
+}
+
+// RequestVote handles raft RPC RV calls
+func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Here is what the paper says (5.2 and 5.4):
+	// 1. if req.Term > currentTerm, convert to follower state (reset votedFor)
+	// 2. if req.Term < currentTerm deny vote
+	// 3. if req.Term >= currentTerm, and if votedFor is null or candidateId, and logs are up to date, grant vote
+	// The req.Term == currentTerm situation AFAIK can only happen when we receive a duplicate RV request
+	n.tryFollowNewTerm(req.CandidateID, req.Term, false)
+	voteGranted := false
+	if req.Term >= n.currentTerm && (n.votedFor == -1 || n.votedFor == req.CandidateID) {
+		if req.LastLogIndex >= n.logMgr.LastIndex() && req.LastLogTerm >= n.logMgr.LastTerm() {
+			n.votedFor = req.CandidateID
+			voteGranted = true
+			util.WriteInfo("T%d: \U0001f4e7 Node%d voted for Node%d\n", req.Term, n.nodeID, req.CandidateID)
+		}
+	}
+
+	return &RequestVoteReply{
+		Term:        n.currentTerm,
+		NodeID:      n.nodeID,
+		VotedTerm:   req.Term,
+		VoteGranted: voteGranted,
+	}, nil
+}
+
+// onTimer handles a timer event. Action is based on node's current state.
+// This is run on the timer goroutine so we need to lock first
 func (n *node) onTimer(state NodeState, term int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -199,6 +293,97 @@ func (n *node) onTimer(state NodeState, term int) {
 		} else if n.nodeState == Leader {
 			n.sendHeartbeat()
 		}
+	}
+}
+
+// enterLeaderState resets leader indicies. Caller should acquire writer lock
+func (n *node) enterLeaderState() {
+	n.nodeState = Leader
+	n.currentLeader = n.nodeID
+
+	// reset all follower's indicies
+	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
+
+	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
+}
+
+// enter follower state and follows new leader (or potential leader)
+func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
+	oldLeader := n.currentLeader
+	n.nodeState = Follower
+	n.currentLeader = sourceNodeID
+	n.setTerm(newTerm)
+
+	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
+		util.WriteInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
+	}
+}
+
+// enter candidate state
+func (n *node) enterCandidateState() {
+	n.nodeState = Candidate
+	n.currentLeader = -1
+	n.setTerm(n.currentTerm + 1)
+
+	// vote for self first
+	n.votedFor = n.nodeID
+	n.votes = make(map[int]bool, n.clusterSize)
+	n.votes[n.nodeID] = true
+
+	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
+}
+
+// handleAppendEntriesReply handles append entries reply. Need locking since this will be
+// running on different goroutine for reply from each node
+func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// If there is a higher term, follow and stop processing
+	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
+		return
+	}
+
+	// Different from the paper, we don't wait for AE call to finish
+	// so there is a chance that we are no longer the leader
+	// In that case no need to continue
+	if n.nodeState != Leader || n.currentTerm != reply.Term {
+		return
+	}
+
+	followerID := reply.NodeID
+
+	// 5.3 update leader indicies.
+	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
+	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
+	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
+	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
+
+	// Check whether there are logs to commit and then replicate
+	n.leaderCommit()
+	n.replicateLogsTo(followerID)
+}
+
+// callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
+func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
+		// there is a higher term, no need to continue
+		return
+	}
+
+	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
+		// stale vote or denied, ignore
+		return
+	}
+
+	// record and count votes
+	n.votes[reply.NodeID] = true
+	if n.wonElection() {
+		n.enterLeaderState()
+		n.sendHeartbeat()
 	}
 }
 
@@ -223,6 +408,93 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 	return follow
 }
 
+// send heartbeat, caller should acquire at least reader lock
+func (n *node) sendHeartbeat() {
+	for _, peer := range n.peerMgr.GetAllPeers() {
+		req := n.createAERequest(peer.nextIndex, 0)
+		util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat to Node%d, prevIndex %d\n", n.currentTerm, n.nodeID, peer.NodeID, req.PrevLogIndex)
+
+		// send heart beat (on different goroutines), response will be processed there
+		n.peerMgr.AppendEntries(peer.NodeID, req, n.handleAppendEntriesReply)
+	}
+
+	// 5.2 - refresh timer
+	n.refreshTimer()
+}
+
+// start an election, caller should acquire write lock
+func (n *node) startElection() {
+	n.enterCandidateState()
+
+	// create RV request
+	req := &RequestVoteRequest{
+		Term:         n.currentTerm,
+		CandidateID:  n.nodeID,
+		LastLogIndex: n.logMgr.LastIndex(),
+		LastLogTerm:  n.logMgr.LastTerm(),
+	}
+
+	// request vote (on different goroutines), response will be processed there
+	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
+
+	n.refreshTimer()
+}
+
+// replicateLogsTo replicate logs to follower as needed
+// This should be only be called by leader
+func (n *node) replicateLogsTo(targetNodeID int) bool {
+	follower := n.peerMgr.GetPeer(targetNodeID)
+
+	if follower.nextIndex > n.logMgr.LastIndex() {
+		// nothing to replicate
+		return false
+	}
+
+	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
+		// Send snapshot
+		req := n.createSnapshotRequest()
+		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
+
+		n.peerMgr.InstallSnapshot(follower.NodeID, req, n.handleAppendEntriesReply)
+	} else {
+		// there are logs to replicate, create AE request and send
+		req := n.createAERequest(follower.nextIndex, maxAppendEntriesCount)
+		minIdx := req.Entries[0].Index
+		maxIdx := req.Entries[len(req.Entries)-1].Index
+		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+
+		n.peerMgr.AppendEntries(follower.NodeID, req, n.handleAppendEntriesReply)
+	}
+
+	return true
+}
+
+// leaderCommit commits logs as needed by checking each follower's match index
+// This should only be called by leader
+func (n *node) leaderCommit() {
+	commitIndex := n.logMgr.CommitIndex()
+	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
+		entry := n.logMgr.GetLogEntry(i)
+
+		if entry.Term < n.currentTerm {
+			// 5.4.2 Raft doesn't allow committing of previous terms
+			// A leader shall only commit entries added by itself, and term is the indication of ownership
+			break
+		} else if entry.Term > n.currentTerm {
+			// This will never happen, adding for safety purpose
+			continue
+		}
+
+		// If we reach here, we can safely declare sole ownership of the ith entry
+		if n.peerMgr.MajorityMatch(i) {
+			commitIndex = i
+			break
+		}
+	}
+
+	n.commitTo(commitIndex)
+}
+
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
 	if newCommit, newSnapshot := n.logMgr.Commit(targetCommitIndex); newCommit {
@@ -231,6 +503,62 @@ func (n *node) commitTo(targetCommitIndex int) {
 			util.WriteInfo("T%d: Node%d created new snapshot L%d_T%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotIndex(), n.logMgr.SnapshotTerm())
 		}
 	}
+}
+
+// createAERequest creates an AppendEntriesRequest with proper log payload
+func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
+	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
+	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
+	// That scenario will only happen for heartbeats - and it's ok to change it to point to the first entry in the logs
+	nextIdx = util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
+	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, nextIdx+count)
+
+	req := &AppendEntriesRequest{
+		Term:         n.currentTerm,
+		LeaderID:     n.nodeID,
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		Entries:      entris,
+		LeaderCommit: n.logMgr.CommitIndex(),
+	}
+
+	return req
+}
+
+// createSnapshotRequest creates a snapshot request to send to follower
+func (n *node) createSnapshotRequest() *SnapshotRequest {
+	return &SnapshotRequest{
+		Term:          n.currentTerm,
+		LeaderID:      n.nodeID,
+		SnapshotIndex: n.logMgr.SnapshotIndex(),
+		SnapshotTerm:  n.logMgr.SnapshotTerm(),
+		File:          n.logMgr.SnapshotFile(),
+	}
+}
+
+// count votes for current node and term and return true if we won
+func (n *node) wonElection() bool {
+	total := 0
+	for _, v := range n.votes {
+		if v {
+			total++
+		}
+	}
+	return total > n.clusterSize/2
+}
+
+// setTerm sets a new term
+func (n *node) setTerm(newTerm int) {
+	if newTerm < n.currentTerm {
+		util.Panicf("can't set new term %d, which is less than current term %d\n", newTerm, n.currentTerm)
+	}
+
+	if newTerm > n.currentTerm {
+		// reset vote on higher term
+		n.votedFor = -1
+	}
+
+	n.currentTerm = newTerm
 }
 
 // Refreshes timer based on current state
