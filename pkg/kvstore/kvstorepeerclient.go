@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"time"
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
@@ -19,8 +17,6 @@ const snapshotRPCTimeout = rpcTimeOut * 3
 
 // We need to fine tune below value. If server is busy, a short timeout will cause unnecessary excessive rejection.
 const proxyRPCTimeout = rpcTimeOut * 10
-
-const snapshotChunkSize = 8 * 1024
 
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor Delete")
@@ -53,13 +49,15 @@ func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, callbac
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
+	var reply *raft.AppendEntriesReply
 	ae := fromRaftAERequest(req)
-	resp, err := proxy.client.AppendEntries(ctx, ae)
-
-	if err == nil {
-		reply := toRaftAEReply(resp)
-		callback(reply)
+	if resp, err := proxy.client.AppendEntries(ctx, ae); err != nil {
+		//util.WriteError("Error sending AppendEntries message. %s", err)
+	} else {
+		reply = toRaftAEReply(resp)
 	}
+
+	callback(reply)
 }
 
 // RequestVote handles raft RPC RV calls to a given node
@@ -67,13 +65,15 @@ func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback fu
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
+	var reply *raft.RequestVoteReply
 	rv := fromRaftRVRequest(req)
-	resp, err := proxy.client.RequestVote(ctx, rv)
-
-	if err == nil {
-		reply := toRaftRVReply(resp)
-		callback(reply)
+	if resp, err := proxy.client.RequestVote(ctx, rv); err != nil {
+		//util.WriteError("Error sending RequestVote message. %s", err)
+	} else {
+		reply = toRaftRVReply(resp)
 	}
+
+	callback(reply)
 }
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
@@ -81,43 +81,35 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
-	stream, err := proxy.client.InstallSnapshot(ctx)
+	var (
+		stream pb.KVStoreRaft_InstallSnapshotClient
+		err    error
+		reply  *raft.AppendEntriesReply
+	)
+
+	stream, err = proxy.client.InstallSnapshot(ctx)
 	if err != nil {
 		//util.WriteError("Error opening gRPC snapshot stream. %s", err)
-		return
-	}
-
-	f, err := os.Open(req.File)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	sr := fromRaftSnapshotRequest(req)
-	buf := make([]byte, snapshotChunkSize)
-	for {
-		n, err := f.Read(buf)
-		if err == io.EOF {
-			// done sending
-			break
-		} else if err != nil {
-			util.WriteError("Error reading snapshott file. %s", err)
-			return
-		}
-
-		sr.Data = buf[:n]
-		if err := stream.Send(sr); err != nil {
-			util.WriteError("Error sending shapshot chunk. %s", err)
-			return
-		}
-	}
-
-	if resp, err := stream.CloseAndRecv(); err == nil {
-		reply := toRaftAEReply(resp)
-		callback(reply)
 	} else {
-		util.WriteError("Error waiting for snapshot reply. %s", err)
+		sr := fromRaftSnapshotRequest(req)
+		err = raft.SendSnapshot(req, func(data []byte) error {
+			sr.Data = data
+			return stream.Send(sr)
+		})
+
+		if err != nil {
+			util.WriteError("Error sending snapshot stream. %s", err)
+		} else {
+			if resp, err := stream.CloseAndRecv(); err != nil {
+				util.WriteError("Error waiting for snapshot reply. %s", err)
+			} else {
+				reply = toRaftAEReply(resp)
+			}
+		}
 	}
+
+	// invoke callback always
+	callback(reply)
 }
 
 // Get gets values from state machine against leader

@@ -3,7 +3,6 @@ package kvstore
 import (
 	"context"
 	"errors"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -57,48 +56,25 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 
 // InstallSnapshot installs snapshot on the target node
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	var (
-		chunk *pb.SnapshotRequest
-		req   *raft.SnapshotRequest
-		resp  *raft.AppendEntriesReply
-		w     io.WriteCloser
-		err   error
-	)
-
-	for {
-		if chunk, err = stream.Recv(); err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				return err
-			}
+	// Receive snapshot as file first
+	req, err := raft.ReceiveSnapshot(s.node.NodeID(), func() (*raft.SnapshotRequest, []byte, error) {
+		rpcSnapshotReq, err := stream.Recv()
+		if err != nil {
+			return nil, nil, err
 		}
 
-		// Create snapshot file if not yet
-		if req == nil {
-			req = toRaftSnapshotRequest(chunk)
-			if req.File, w, err = raft.CreateRemoteSnapshotFile(req.LeaderID, req.SnapshotTerm, req.SnapshotIndex); err != nil {
-				return err
-			}
-			defer w.Close()
-		}
+		return toRaftSnapshotRequest(rpcSnapshotReq), rpcSnapshotReq.Data, nil
+	})
 
-		// Write data
-		if _, err = w.Write(chunk.Data); err != nil {
-			return err
-		}
-	}
-
-	if req == nil || w == nil {
-		return errorEmptySnapshot
-	}
-
-	w.Close() // close file before installing
-	if resp, err = s.node.InstallSnapshot(req); err != nil {
+	if err != nil {
 		return err
 	}
 
-	return stream.SendAndClose(fromRaftAEReply(resp))
+	var reply *raft.AppendEntriesReply
+	if reply, err = s.node.InstallSnapshot(req); err != nil {
+		return err
+	}
+	return stream.SendAndClose(fromRaftAEReply(reply))
 }
 
 // Set sets a value in the kv store

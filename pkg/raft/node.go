@@ -369,6 +369,10 @@ func (n *node) startElection() {
 
 // callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
 func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
+	if reply == nil {
+		return
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -447,6 +451,10 @@ func (n *node) replicateToFollower(targetNodeID int) bool {
 // handleAppendEntriesReply handles append entries reply. Need locking since this will be
 // running on different goroutine for reply from each node
 func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
+	if reply == nil {
+		return
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 

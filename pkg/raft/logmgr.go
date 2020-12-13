@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 1000
+const snapshotEntriesCount = 10
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -217,7 +217,7 @@ func (lm *LogManager) TakeSnapshot() error {
 
 	index := lm.lastApplied
 	term := lm.getLogEntryTerm(index)
-	fullPath, w, err := CreateLocalSnapshotFile(lm.nodeID, term, index)
+	fullPath, w, err := createLocalSnapshotFile(lm.nodeID, term, index)
 	if err != nil {
 		return err
 	}
@@ -240,14 +240,14 @@ func (lm *LogManager) TakeSnapshot() error {
 // InstallSnapshot installs a snapshot
 // For simplicity, we drop all local logs after installing the snapshot
 func (lm *LogManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
-	w, err := OpenSnapshotFile(snapshotFile)
+	r, err := openSnapshotFile(snapshotFile)
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer r.Close()
 
 	// read and deserialize
-	if err := lm.statemachine.Deserialize(w); err != nil {
+	if err := lm.statemachine.Deserialize(r); err != nil {
 		return err
 	}
 
