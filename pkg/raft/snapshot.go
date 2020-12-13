@@ -12,6 +12,8 @@ const snapshotChunkSize = 8 * 1024
 
 type snapshotRecvFunc func() (*SnapshotRequest, []byte, error)
 type snapshotSendFunc func([]byte) error
+type snapshotWriteFunc func(w io.Writer) error
+type snapshotReadFunc func(w io.Reader) error
 
 var snapshotPath string
 var errorInvalidSnapshotInfo = errors.New("Invalid snapshot index/term")
@@ -91,6 +93,29 @@ func ReceiveSnapshot(nodeID int, recvFunc snapshotRecvFunc) (*SnapshotRequest, e
 	}
 
 	return req, nil
+}
+
+// CreateSnapshot creates a new snapshot
+func CreateSnapshot(nodeID int, term int, index int, writeFunc snapshotWriteFunc) (string, error) {
+	file, w, err := createLocalSnapshotFile(nodeID, term, index)
+	if err != nil {
+		return "", err
+	}
+	defer w.Close()
+
+	// Write to file
+	return file, writeFunc(w)
+}
+
+// ReadSnapshot reads the snapshot file
+func ReadSnapshot(file string, readFunc snapshotReadFunc) error {
+	r, err := openSnapshotFile(file)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	return readFunc(r)
 }
 
 // openSnapshotFile opens the snapshot file and returns a closable reader

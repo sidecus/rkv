@@ -3,7 +3,6 @@ package raft
 import (
 	"encoding/json"
 	"io"
-	"os"
 	"testing"
 )
 
@@ -509,8 +508,7 @@ func TestGetLogEntries(t *testing.T) {
 }
 
 func TestSnapshot(t *testing.T) {
-	tempDir := os.TempDir()
-	SetSnapshotPath(tempDir)
+	setSnapshotPathToTempDir()
 	lmSrc := NewLogMgr(100, &testStateMachine{lastApplied: 100}).(*LogManager)
 	smDst := &testStateMachine{}
 	lmDst := NewLogMgr(200, smDst).(*LogManager)

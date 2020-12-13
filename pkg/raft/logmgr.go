@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 10
+const snapshotEntriesCount = 1000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -217,14 +217,10 @@ func (lm *LogManager) TakeSnapshot() error {
 
 	index := lm.lastApplied
 	term := lm.getLogEntryTerm(index)
-	fullPath, w, err := createLocalSnapshotFile(lm.nodeID, term, index)
-	if err != nil {
-		return err
-	}
-	defer w.Close()
 
-	// Write to file
-	if err := lm.statemachine.Serialize(w); err != nil {
+	// serialize and create snapshot
+	file, err := CreateSnapshot(lm.nodeID, term, index, lm.statemachine.Serialize)
+	if err != nil {
 		return err
 	}
 
@@ -232,7 +228,7 @@ func (lm *LogManager) TakeSnapshot() error {
 	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
 	lm.snapshotIndex = index
 	lm.snapshotTerm = term
-	lm.lastSnapshotFile = fullPath
+	lm.lastSnapshotFile = file
 
 	return nil
 }
@@ -240,14 +236,9 @@ func (lm *LogManager) TakeSnapshot() error {
 // InstallSnapshot installs a snapshot
 // For simplicity, we drop all local logs after installing the snapshot
 func (lm *LogManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
-	r, err := openSnapshotFile(snapshotFile)
+	// Read snapshot and deserialize
+	err := ReadSnapshot(snapshotFile, lm.statemachine.Deserialize)
 	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	// read and deserialize
-	if err := lm.statemachine.Deserialize(r); err != nil {
 		return err
 	}
 
