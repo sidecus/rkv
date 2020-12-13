@@ -328,35 +328,43 @@ func (n *node) enterCandidateState() {
 	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
-// handleAppendEntriesReply handles append entries reply. Need locking since this will be
-// running on different goroutine for reply from each node
-func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// If there is a higher term, follow and stop processing
-	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
-		return
+// Check peer's term and follow if needed. This will be called upon all RPC request and responses.
+// Returns true if we are following the given node and term
+func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool) bool {
+	follow := false
+	if newTerm > n.currentTerm {
+		// Follow newer term right away. sourceNodeID might not be the new leader, but it potentially
+		// has better knowledge of the leader than us
+		follow = true
+	} else if newTerm == n.currentTerm && isAppendEntries {
+		// For AE calls, we should follow even term is the same
+		follow = true
 	}
 
-	// Different from the paper, we don't wait for AE call to finish
-	// so there is a chance that we are no longer the leader
-	// In that case no need to continue
-	if n.nodeState != Leader || n.currentTerm != reply.Term {
-		return
+	if follow {
+		n.enterFollowerState(sourceNodeID, newTerm)
+		n.refreshTimer()
 	}
 
-	followerID := reply.NodeID
+	return follow
+}
 
-	// 5.3 update leader indicies.
-	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
-	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
-	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
-	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
+// start an election, caller should acquire write lock
+func (n *node) startElection() {
+	n.enterCandidateState()
 
-	// Check whether there are logs to commit and then replicate
-	n.leaderCommit()
-	n.replicateToFollower(followerID)
+	// create RV request
+	req := &RequestVoteRequest{
+		Term:         n.currentTerm,
+		CandidateID:  n.nodeID,
+		LastLogIndex: n.logMgr.LastIndex(),
+		LastLogTerm:  n.logMgr.LastTerm(),
+	}
+
+	// request vote (on different goroutines), response will be processed there
+	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
+
+	n.refreshTimer()
 }
 
 // callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
@@ -382,27 +390,6 @@ func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
 	}
 }
 
-// Check peer's term and follow if needed. This will be called upon all RPC request and responses.
-// Returns true if we are following the given node and term
-func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool) bool {
-	follow := false
-	if newTerm > n.currentTerm {
-		// Follow newer term right away. sourceNodeID might not be the new leader, but it potentially
-		// has better knowledge of the leader than us
-		follow = true
-	} else if newTerm == n.currentTerm && isAppendEntries {
-		// For AE calls, we should follow even term is the same
-		follow = true
-	}
-
-	if follow {
-		n.enterFollowerState(sourceNodeID, newTerm)
-		n.refreshTimer()
-	}
-
-	return follow
-}
-
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
 	for _, peer := range n.peerMgr.GetAllPeers() {
@@ -414,24 +401,6 @@ func (n *node) sendHeartbeat() {
 	}
 
 	// 5.2 - refresh timer
-	n.refreshTimer()
-}
-
-// start an election, caller should acquire write lock
-func (n *node) startElection() {
-	n.enterCandidateState()
-
-	// create RV request
-	req := &RequestVoteRequest{
-		Term:         n.currentTerm,
-		CandidateID:  n.nodeID,
-		LastLogIndex: n.logMgr.LastIndex(),
-		LastLogTerm:  n.logMgr.LastTerm(),
-	}
-
-	// request vote (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
-
 	n.refreshTimer()
 }
 
@@ -473,6 +442,37 @@ func (n *node) replicateToFollower(targetNodeID int) bool {
 	}
 
 	return true
+}
+
+// handleAppendEntriesReply handles append entries reply. Need locking since this will be
+// running on different goroutine for reply from each node
+func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// If there is a higher term, follow and stop processing
+	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
+		return
+	}
+
+	// Different from the paper, we don't wait for AE call to finish
+	// so there is a chance that we are no longer the leader
+	// In that case no need to continue
+	if n.nodeState != Leader || n.currentTerm != reply.Term {
+		return
+	}
+
+	followerID := reply.NodeID
+
+	// 5.3 update leader indicies.
+	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
+	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
+	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
+	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
+
+	// Check whether there are logs to commit and then replicate
+	n.leaderCommit()
+	n.replicateToFollower(followerID)
 }
 
 // leaderCommit commits logs as needed by checking each follower's match index
