@@ -62,12 +62,12 @@ type node struct {
 	nodeState     NodeState
 	currentTerm   int
 	currentLeader int
-	votedFor      int // resets on term change
+	votedFor      int          // resets on term change
+	votes         map[int]bool // resets when entering candidate state
 	logMgr        ILogManager
 	peerMgr       IPeerManager
 
 	// candidate only
-	votes map[int]bool
 
 	// timer
 	timer IRaftTimer
@@ -82,7 +82,6 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 	if err != nil {
 		util.Panicf("Failed to get current working directory for snapshot. %s", err)
 	}
-
 	SetSnapshotPath(cwd)
 
 	n := &node{
@@ -93,9 +92,9 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
+		votes:         make(map[int]bool, size),
 		logMgr:        NewLogMgr(nodeID, sm),
 		peerMgr:       NewPeerManager(nodeID, peers, proxyFactory),
-		votes:         make(map[int]bool, size),
 	}
 
 	n.timer = NewRaftTimer(n.onTimer)
@@ -160,14 +159,8 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 
 	if n.nodeState == Leader {
 		// Process the command, then replicate to followers
-		// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit,
-		// as well infinite retry upon failure.
-		// We take a different approach here - we return eagerly and don't wait for follower's response synchronously
-		// Instead commit is done asynchronously after replication (upon AE replies).
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-		for _, follower := range n.peerMgr.GetAllPeers() {
-			n.replicateLogsTo(follower.NodeID)
-		}
+		n.replicateAndWait()
 		success = true
 	}
 
@@ -363,7 +356,7 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 
 	// Check whether there are logs to commit and then replicate
 	n.leaderCommit()
-	n.replicateLogsTo(followerID)
+	n.replicateToFollower(followerID)
 }
 
 // callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
@@ -442,9 +435,20 @@ func (n *node) startElection() {
 	n.refreshTimer()
 }
 
-// replicateLogsTo replicate logs to follower as needed
+// replicateAndWait replicates logs to all followers and wait for their response
+func (n *node) replicateAndWait() {
+	// TODO[sidecus]: We still need to wait for majority to agree, it's key for raft.
+	// Right now we don't wait for response
+	// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit,
+	// as well infinite retry upon failure.
+	for _, follower := range n.peerMgr.GetAllPeers() {
+		n.replicateToFollower(follower.NodeID)
+	}
+}
+
+// replicateToFollower replicate logs to follower as needed
 // This should be only be called by leader
-func (n *node) replicateLogsTo(targetNodeID int) bool {
+func (n *node) replicateToFollower(targetNodeID int) bool {
 	follower := n.peerMgr.GetPeer(targetNodeID)
 
 	if follower.nextIndex > n.logMgr.LastIndex() {
@@ -455,16 +459,16 @@ func (n *node) replicateLogsTo(targetNodeID int) bool {
 	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot
 		req := n.createSnapshotRequest()
-		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
 
+		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
 		n.peerMgr.InstallSnapshot(follower.NodeID, req, n.handleAppendEntriesReply)
 	} else {
 		// there are logs to replicate, create AE request and send
 		req := n.createAERequest(follower.nextIndex, maxAppendEntriesCount)
 		minIdx := req.Entries[0].Index
 		maxIdx := req.Entries[len(req.Entries)-1].Index
-		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 
+		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 		n.peerMgr.AppendEntries(follower.NodeID, req, n.handleAppendEntriesReply)
 	}
 
