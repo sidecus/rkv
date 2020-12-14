@@ -48,8 +48,8 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votes map")
 	}
 
-	if n.logMgr.(*LogManager).snapshotPath != tempDir {
-		t.Error("Node created with incorrect snapshotPath")
+	if snapshotPath == "" {
+		t.Error("NewNode doesn't set snapshot path")
 	}
 }
 
@@ -210,7 +210,7 @@ func TestLeaderCommit(t *testing.T) {
 		lastApplied: -111,
 	}
 	peerMgr := createTestPeerManager(2)
-	logMgr := NewLogMgr(100, sm, "").(*LogManager)
+	logMgr := NewLogMgr(100, sm).(*LogManager)
 
 	peerMgr.GetPeer(0).nextIndex = 2
 	peerMgr.GetPeer(0).matchIndex = 1
@@ -251,11 +251,11 @@ func TestLeaderCommit(t *testing.T) {
 	}
 }
 
-func TestReplicateLogsTo(t *testing.T) {
+func TestReplicateToFollower(t *testing.T) {
 	sm := &testStateMachine{
 		lastApplied: -111,
 	}
-	logMgr := NewLogMgr(100, sm, "").(*LogManager)
+	logMgr := NewLogMgr(100, sm).(*LogManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,
@@ -276,7 +276,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	// nextIndex is larger than lastIndex, nothing to replicate
 	peer0.nextIndex = logMgr.lastIndex + 1
 	peer0.matchIndex = 1
-	ret := n.replicateLogsTo(0)
+	ret := n.replicateToFollower(0)
 	if ret {
 		t.Error("replicateLogsTo should not replicate when nextIndex is high enough")
 	}
@@ -284,7 +284,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	// nextIndex is smaler than lastIndex
 	peer0.nextIndex = 2
 	peer0.matchIndex = 1
-	ret = n.replicateLogsTo(0)
+	ret = n.replicateToFollower(0)
 	if !ret {
 		t.Error("replicateLogsTo should replicate logs but it didn't")
 	}
@@ -305,7 +305,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshot"
 	peer0.nextIndex = 3
-	ret = n.replicateLogsTo(0)
+	ret = n.replicateToFollower(0)
 	if !ret {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}
@@ -324,7 +324,7 @@ func TestReplicateLogsTo(t *testing.T) {
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshotsmaller"
 	peer0.nextIndex = 2
-	ret = n.replicateLogsTo(0)
+	ret = n.replicateToFollower(0)
 	if !ret {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}

@@ -1,10 +1,6 @@
 package raft
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
 	"github.com/sidecus/raft/pkg/util"
 )
 
@@ -48,7 +44,6 @@ type LogManager struct {
 	snapshotIndex    int
 	snapshotTerm     int
 	lastSnapshotFile string
-	snapshotPath     string // path to save snapshot files
 
 	// logs should be read from persistent storage upon init
 	// it contains entries from snapshotIndex+1 to lastIndex
@@ -60,7 +55,7 @@ type LogManager struct {
 }
 
 // NewLogMgr creates a new logmgr
-func NewLogMgr(nodeID int, sm IStateMachine, snapshotPath string) ILogManager {
+func NewLogMgr(nodeID int, sm IStateMachine) ILogManager {
 	if sm == nil {
 		util.Panicf("state machien cannot be nil")
 	}
@@ -72,7 +67,6 @@ func NewLogMgr(nodeID int, sm IStateMachine, snapshotPath string) ILogManager {
 		commitIndex:   -1,
 		snapshotIndex: -1,
 		snapshotTerm:  -1,
-		snapshotPath:  snapshotPath,
 		lastApplied:   -1,
 		logs:          make([]LogEntry, 0, 100),
 		statemachine:  sm,
@@ -224,28 +218,20 @@ func (lm *LogManager) TakeSnapshot() error {
 	index := lm.lastApplied
 	term := lm.getLogEntryTerm(index)
 
-	name := fmt.Sprintf("Node%d_%d_%d_local.rkvsnapshot", lm.nodeID, index, term)
-	snapshotFile := filepath.Join(lm.snapshotPath, name)
-	f, err := os.Create(snapshotFile)
+	// serialize and create snapshot
+	file, w, err := CreateSnapshot(lm.nodeID, term, index, "local")
 	if err != nil {
 		return err
 	}
 
-	defer f.Close()
-
-	// Write to file and force a commit
-	if err := lm.statemachine.Serialize(f); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
+	defer w.Close()
+	lm.statemachine.Serialize(w)
 
 	// Truncate logs and update snapshotIndex and term
 	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
 	lm.snapshotIndex = index
 	lm.snapshotTerm = term
-	lm.lastSnapshotFile = snapshotFile
+	lm.lastSnapshotFile = file
 
 	return nil
 }
@@ -253,17 +239,14 @@ func (lm *LogManager) TakeSnapshot() error {
 // InstallSnapshot installs a snapshot
 // For simplicity, we drop all local logs after installing the snapshot
 func (lm *LogManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
-	f, err := os.Open(snapshotFile)
+	// Read snapshot and deserialize
+	r, err := ReadSnapshot(snapshotFile)
 	if err != nil {
 		return err
 	}
 
-	defer f.Close()
-
-	// read and deserialize
-	if err := lm.statemachine.Deserialize(f); err != nil {
-		return err
-	}
+	defer r.Close()
+	lm.statemachine.Deserialize(r)
 
 	lm.snapshotIndex = snapshotIndex
 	lm.snapshotTerm = snapshotTerm

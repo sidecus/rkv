@@ -3,7 +3,6 @@ package raft
 import (
 	"encoding/json"
 	"io"
-	"os"
 	"testing"
 )
 
@@ -29,7 +28,7 @@ func (sm *testStateMachine) Deserialize(r io.Reader) error {
 }
 
 func TestNewLogManager(t *testing.T) {
-	lm := NewLogMgr(100, &testStateMachine{}, "abcdefg").(*LogManager)
+	lm := NewLogMgr(100, &testStateMachine{}).(*LogManager)
 
 	if lm.nodeID != 100 {
 		t.Error("LogManager created with invalid node ID")
@@ -62,14 +61,10 @@ func TestNewLogManager(t *testing.T) {
 	if lm.lastApplied != -1 {
 		t.Error("LogManager created with invalid lastApplied")
 	}
-
-	if lm.snapshotPath != "abcdefg" {
-		t.Error("LogManager created with invalid snapshotPath")
-	}
 }
 
 func TestProcessCmd(t *testing.T) {
-	lm := NewLogMgr(100, &testStateMachine{}, "").(*LogManager)
+	lm := NewLogMgr(100, &testStateMachine{}).(*LogManager)
 	cmd := StateMachineCmd{}
 	if lm.LastIndex() != -1 {
 		t.Error("LastIndex is not -1 upon init")
@@ -122,7 +117,7 @@ func TestProcessCmd(t *testing.T) {
 
 func TestProcessLogs(t *testing.T) {
 	sm := &testStateMachine{lastApplied: -1}
-	lm := NewLogMgr(100, sm, "").(*LogManager)
+	lm := NewLogMgr(100, sm).(*LogManager)
 	lm.logs = make([]LogEntry, 5)
 	lm.lastIndex = 14
 	lm.lastTerm = 13
@@ -222,7 +217,7 @@ func TestProcessLogs(t *testing.T) {
 
 func TestCommit(t *testing.T) {
 	sm := &testStateMachine{lastApplied: -1}
-	lm := NewLogMgr(100, sm, "").(*LogManager)
+	lm := NewLogMgr(100, sm).(*LogManager)
 
 	// append two logs to it
 	entries := generateTestEntries(-1, 1)
@@ -513,10 +508,10 @@ func TestGetLogEntries(t *testing.T) {
 }
 
 func TestSnapshot(t *testing.T) {
-	tempDir := os.TempDir()
-	lmSrc := NewLogMgr(100, &testStateMachine{lastApplied: 100}, tempDir).(*LogManager)
+	setSnapshotPathToTempDir()
+	lmSrc := NewLogMgr(100, &testStateMachine{lastApplied: 100}).(*LogManager)
 	smDst := &testStateMachine{}
-	lmDst := NewLogMgr(200, smDst, tempDir).(*LogManager)
+	lmDst := NewLogMgr(200, smDst).(*LogManager)
 
 	// Take snapshot on empty state (usually won't happen)
 	testSnapshot(lmSrc, lmDst, t)
