@@ -2,7 +2,7 @@ package kvstore
 
 import (
 	"context"
-	"errors"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -12,8 +12,6 @@ import (
 	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
 )
-
-var errorEmptySnapshot = errors.New("empty snapshot received")
 
 // RPCServer is used to implement pb.KVStoreRPCServer
 type RPCServer struct {
@@ -56,24 +54,34 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 
 // InstallSnapshot installs snapshot on the target node
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	// Receive snapshot as file first
-	req, err := raft.ReceiveSnapshot(s.node.NodeID(), func() (*raft.SnapshotRequest, []byte, error) {
-		rpcSnapshotReq, err := stream.Recv()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		return toRaftSnapshotRequest(rpcSnapshotReq), rpcSnapshotReq.Data, nil
-	})
-
+	// create snapshot reader
+	reader, err := newGRPCSnapshotStreamReader(stream)
 	if err != nil {
 		return err
 	}
 
+	// Open snapshot file
+	req := reader.req
+	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.Term, req.SnapshotIndex, "remote")
+	if err != nil {
+		return err
+	}
+
+	// Copy to the file
+	defer w.Close()
+	req.File = file
+	_, err = io.Copy(w, reader)
+	if err != nil {
+		return err
+	}
+
+	// Close snapshot file and try to install
+	w.Close()
 	var reply *raft.AppendEntriesReply
 	if reply, err = s.node.InstallSnapshot(req); err != nil {
 		return err
 	}
+
 	return stream.SendAndClose(fromRaftAEReply(reply))
 }
 

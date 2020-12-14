@@ -219,10 +219,13 @@ func (lm *LogManager) TakeSnapshot() error {
 	term := lm.getLogEntryTerm(index)
 
 	// serialize and create snapshot
-	file, err := CreateSnapshot(lm.nodeID, term, index, lm.statemachine.Serialize)
+	file, w, err := CreateSnapshot(lm.nodeID, term, index, "local")
 	if err != nil {
 		return err
 	}
+
+	defer w.Close()
+	lm.statemachine.Serialize(w)
 
 	// Truncate logs and update snapshotIndex and term
 	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
@@ -237,10 +240,13 @@ func (lm *LogManager) TakeSnapshot() error {
 // For simplicity, we drop all local logs after installing the snapshot
 func (lm *LogManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
 	// Read snapshot and deserialize
-	err := ReadSnapshot(snapshotFile, lm.statemachine.Deserialize)
+	r, err := ReadSnapshot(snapshotFile)
 	if err != nil {
 		return err
 	}
+
+	defer r.Close()
+	lm.statemachine.Deserialize(r)
 
 	lm.snapshotIndex = snapshotIndex
 	lm.snapshotTerm = snapshotTerm

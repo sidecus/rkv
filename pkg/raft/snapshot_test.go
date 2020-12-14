@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,95 +17,80 @@ func TestSetSnapshotPath(t *testing.T) {
 	}
 }
 
-func TestSendSnapshot(t *testing.T) {
+func TestReadSnapshot(t *testing.T) {
 	path := setSnapshotPathToTempDir()
 	file := filepath.Join(path, "TestSendSnapshot.rkvsnapshot")
 
 	filler := byte(6)
 	n := createTestSnapshot(file, filler)
 
-	req := &SnapshotRequest{File: file}
-	bytesSent := 0
-	err := SendSnapshot(req, func(data []byte) error {
-		bytesSent += len(data)
-		for i := 0; i < len(data); i++ {
-			if data[i] != filler {
-				return errors.New("Saved data is different from raw")
+	reader, err := ReadSnapshot(file)
+	if err != nil {
+		t.Error("ReadSnapshot cannot open the snapshot file")
+	}
+	defer reader.Close()
+
+	bytesRead := 0
+	buffer := make([]byte, 1024)
+	for {
+		bytes, err := reader.Read(buffer)
+		if err != nil {
+			if err != io.EOF {
+				t.Error("Failed reading from snapshot")
+				return
 			}
+			break
 		}
 
-		return nil
-	})
+		same := true
+		for i := 0; i < bytes; i++ {
+			if buffer[i] != filler {
+				t.Error("Content read from snapshot is not expected")
+				same = false
+			}
+		}
+		if !same {
+			break
+		}
 
-	if err != nil {
-		t.Error(err)
+		bytesRead += bytes
 	}
 
-	if bytesSent != n {
+	if bytesRead != n {
 		t.Error("Sent bytes is different from file size")
 	}
 
 	// cleanup
+	reader.Close()
 	os.Remove(file)
 }
 
-func TestReceiveSnapshot(t *testing.T) {
+func TestCreateSnapshot(t *testing.T) {
 	setSnapshotPathToTempDir()
 
-	filler := byte(8)
-	buf := createTestData(filler)
-	nextIndex := 0
-	req := &SnapshotRequest{
-		SnapshotIndex: 5,
-		SnapshotTerm:  20,
-	}
+	file, w, err := CreateSnapshot(1, 20, 5, "remote")
 
-	recvFunc := func() (*SnapshotRequest, []byte, error) {
-		if nextIndex >= len(buf) {
-			return nil, nil, io.EOF
-		}
-
-		start := nextIndex
-		end := util.Min(nextIndex+snapshotChunkSize, len(buf))
-		nextIndex = end
-		return req, buf[start:end], nil
-	}
-
-	r, err := ReceiveSnapshot(1, recvFunc)
 	if err != nil {
-		t.Error(err)
+		t.Error("CreateSnapshot failed" + err.Error())
+		return
 	}
 
-	if !strings.HasSuffix(r.File, "Node1_20_5_remote.rkvsnapshot") {
+	if !strings.HasSuffix(file, "Node1_20_5_remote.rkvsnapshot") {
 		t.Error("Wrong snapshot file created")
 	}
 
-	f, _ := os.Open(r.File)
-	totalBytes := 0
-	for {
-		n, err := f.Read(buf)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			t.Error("Cannot read received snapshot file")
-			break
-		}
-
-		for i := 0; i < n; i++ {
-			if buf[i] != filler {
-				t.Fatal("Received snapshot file doesn't contain expected data")
-			}
-		}
-
-		totalBytes += n
+	if w == nil {
+		t.Error("CreateSnapshot failed creating snapshot writer")
 	}
 
-	if totalBytes != len(buf) {
-		t.Error("Received snapshot doesn't have correct data length")
+	data := []byte{1, 2, 3}
+	n, err := w.Write(data)
+	if err != nil || n == 0 {
+		t.Error("CreateSnapshot returned writer doesn't work")
 	}
 
-	f.Close()
-	os.Remove(r.File)
+	w.Close()
+	os.Remove(file)
 }
 
 func createTestData(filler byte) []byte {

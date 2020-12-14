@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
@@ -81,34 +82,36 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
-	var (
-		stream pb.KVStoreRaft_InstallSnapshotClient
-		err    error
-		reply  *raft.AppendEntriesReply
-	)
-
-	stream, err = proxy.client.InstallSnapshot(ctx)
+	stream, err := proxy.client.InstallSnapshot(ctx)
 	if err != nil {
 		//util.WriteError("Error opening gRPC snapshot stream. %s", err)
-	} else {
-		sr := fromRaftSnapshotRequest(req)
-		err = raft.SendSnapshot(req, func(data []byte) error {
-			sr.Data = data
-			return stream.Send(sr)
-		})
-
-		if err != nil {
-			util.WriteError("Error sending snapshot stream. %s", err)
-		} else {
-			if resp, err := stream.CloseAndRecv(); err != nil {
-				util.WriteError("Error waiting for snapshot reply. %s", err)
-			} else {
-				reply = toRaftAEReply(resp)
-			}
-		}
+		callback(nil)
+		return
 	}
 
-	// invoke callback always
+	reader, err := raft.ReadSnapshot(req.File)
+	if err != nil {
+		util.WriteError("Error opening snapshot file. %s", err)
+		callback(nil)
+		return
+	}
+
+	defer reader.Close()
+	writer := newGRPCSnapshotStreamWriter(req, stream)
+	if _, err := io.Copy(writer, reader); err != nil {
+		util.WriteError("Error sending snapshot. %s", err)
+		callback(nil)
+		return
+	}
+
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		util.WriteError("Error waiting for snapshot reply. %s", err)
+		callback(nil)
+		return
+	}
+
+	reply := toRaftAEReply(resp)
 	callback(reply)
 }
 
