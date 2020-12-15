@@ -24,6 +24,7 @@ var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor 
 
 // KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
 type KVPeerClient struct {
+	raft.NodeInfo
 	client pb.KVStoreRaftClient
 }
 
@@ -41,58 +42,73 @@ func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 	client := pb.NewKVStoreRaftClient(conn)
 
 	return &KVPeerClient{
+		NodeInfo: raft.NodeInfo{
+			NodeID:   info.NodeID,
+			Endpoint: info.Endpoint,
+		},
 		client: client,
 	}
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, onReply func(*raft.AppendEntriesReply)) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
+	// Makesure onReply is called regardless of what happens
+	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
+	// Here we use a closure to make sure latest value of reply is used
 	var reply *raft.AppendEntriesReply
+	defer func() { onReply(reply) }()
+
 	ae := fromRaftAERequest(req)
 	if resp, err := proxy.client.AppendEntries(ctx, ae); err != nil {
-		//util.WriteError("Error sending AppendEntries message. %s", err)
+		util.WriteTrace("Error sending AppendEntries message to Node%d. %s", proxy.NodeID, err)
 	} else {
 		reply = toRaftAEReply(resp)
 	}
-
-	callback(reply)
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
+func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, onReply func(*raft.RequestVoteReply)) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
+	// Makesure onReply is called regardless of what happens
+	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
+	// Here we use a closure to make sure latest value of reply is used
 	var reply *raft.RequestVoteReply
+	defer func() { onReply(reply) }()
+
 	rv := fromRaftRVRequest(req)
 	if resp, err := proxy.client.RequestVote(ctx, rv); err != nil {
-		//util.WriteError("Error sending RequestVote message. %s", err)
+		util.WriteTrace("Error sending RequestVote messageto Node%d. %s", proxy.NodeID, err)
 	} else {
 		reply = toRaftRVReply(resp)
 	}
-
-	callback(reply)
 }
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
-func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback func(*raft.AppendEntriesReply)) {
+// onReply is gauranteed to be called
+func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, onReply func(*raft.AppendEntriesReply)) {
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
+	// Makesure onReply is called regardless of what happens
+	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
+	// Here we use a closure to make sure latest value of reply is used
+	var reply *raft.AppendEntriesReply
+	defer func() { onReply(reply) }()
+
 	stream, err := proxy.client.InstallSnapshot(ctx)
 	if err != nil {
-		//util.WriteError("Error opening gRPC snapshot stream. %s", err)
-		callback(nil)
+		util.WriteTrace("Error opening gRPC snapshot stream with Node%d. %s", proxy.NodeID, err)
 		return
 	}
 
 	reader, err := raft.ReadSnapshot(req.File)
 	if err != nil {
 		util.WriteError("Error opening snapshot file. %s", err)
-		callback(nil)
 		return
 	}
 
@@ -100,19 +116,16 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback f
 	writer := newGRPCSnapshotStreamWriter(req, stream)
 	if _, err := io.Copy(writer, reader); err != nil {
 		util.WriteError("Error sending snapshot. %s", err)
-		callback(nil)
 		return
 	}
 
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
 		util.WriteError("Error waiting for snapshot reply. %s", err)
-		callback(nil)
 		return
 	}
 
-	reply := toRaftAEReply(resp)
-	callback(reply)
+	reply = toRaftAEReply(resp)
 }
 
 // Get gets values from state machine against leader

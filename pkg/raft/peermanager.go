@@ -2,7 +2,6 @@ package raft
 
 import (
 	"errors"
-	"sync/atomic"
 
 	"github.com/sidecus/raft/pkg/util"
 )
@@ -22,15 +21,24 @@ type NodeInfo struct {
 }
 
 // IPeerProxy defines the RPC client interface for a specific peer nodes
-// It's an abstraction layer so that detailed implementation (RPC or REST) is detached
+// It's an abstraction layer so that concrete implementation (RPC or REST) is detached
 type IPeerProxy interface {
-	// Raft related
-	AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply))
-	RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
-	InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply))
+	// AppendEntries calls a peer node to append entries.
+	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
+	AppendEntries(req *AppendEntriesRequest, onReply func(*AppendEntriesReply))
 
-	// Data related
+	// RequestVote calls a peer node to vote.
+	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
+	RequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply))
+
+	// InstallSnapshot calls a peer node to install a snapshot.
+	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
+	InstallSnapshot(req *SnapshotRequest, onReply func(*AppendEntriesReply))
+
+	// Get invokes a peer node to get values
 	Get(req *GetRequest) (*GetReply, error)
+
+	// Execute invokes a node (usually the leader) to do set or delete operations
 	Execute(cmd *StateMachineCmd) (*ExecuteReply, error)
 }
 
@@ -44,8 +52,7 @@ type IPeerProxyFactory interface {
 type Peer struct {
 	NodeInfo
 	followerStatus
-	replicationCounter int32
-	proxy              IPeerProxy
+	proxy IPeerProxy
 }
 
 // IFollowerStatusManager defines interfaces to manage follower status
@@ -59,10 +66,10 @@ type IFollowerStatusManager interface {
 // IPeerManager defines raft peer manager interface.
 // A peer manager tracks peers' status as well as communicate with them
 type IPeerManager interface {
-	AppendEntries(nodeID int, req *AppendEntriesRequest, callback func(*AppendEntriesReply))
-	RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply))
-	BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply))
-	InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply))
+	AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply))
+	RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply))
+	BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply))
+	InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply))
 	Get(nodeID int, req *GetRequest) (*GetReply, error)
 	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
 
@@ -151,49 +158,37 @@ func (mgr *PeerManager) MajorityMatch(logIndex int) bool {
 }
 
 // AppendEntries sends AE request to a single node
-func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
+func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply)) {
 	// Send request to the peer node on different go routine
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
 		// Only proceed if this is a heartbeat or there is no other replication in progress
-		if len(req.Entries) == 0 {
-			peer.proxy.AppendEntries(req, callback)
-		} else {
-			counter := atomic.AddInt32(&peer.replicationCounter, 1)
-			defer atomic.AddInt32(&peer.replicationCounter, -1)
-			if counter <= 1 {
-				peer.proxy.AppendEntries(req, callback)
-			}
-		}
+		peer.proxy.AppendEntries(req, onReply)
 	}()
 }
 
 // InstallSnapshot installs a snapshot on the target node
-func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, callback func(*AppendEntriesReply)) {
+func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply)) {
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
-		counter := atomic.AddInt32(&peer.replicationCounter, 1)
-		defer atomic.AddInt32(&peer.replicationCounter, -1)
-		if counter <= 1 {
-			peer.proxy.InstallSnapshot(req, callback)
-		}
+		peer.proxy.InstallSnapshot(req, onReply)
 	}()
 }
 
 // RequestVote handles raft RPC RV calls to a peer nodes
-func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, callback func(*RequestVoteReply)) {
+func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
 	peer := mgr.GetPeer(nodeID)
 	go func() {
-		peer.proxy.RequestVote(req, callback)
+		peer.proxy.RequestVote(req, onReply)
 	}()
 }
 
 // BroadcastRequestVote handles raft RPC RV calls to all peer nodes
-func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
+func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
 	for _, peer := range mgr.Peers {
-		mgr.RequestVote(peer.NodeID, req, callback)
+		mgr.RequestVote(peer.NodeID, req, onReply)
 	}
 }
 

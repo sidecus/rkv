@@ -76,6 +76,9 @@ type node struct {
 // NewNode creates a new node
 func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
 	size := len(peers) + 1
+	if size < 3 {
+		util.Panicf("To few nodes. Total count: %d", size)
+	}
 
 	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
 	cwd, err := os.Getwd()
@@ -154,20 +157,22 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Lock()
 
+	isLeader := n.nodeState == Leader
 	leader := n.currentLeader
 	success := false
 
-	if n.nodeState == Leader {
+	if isLeader {
 		// Process the command, then replicate to followers
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-		n.replicateAndWait()
-		success = true
+		if success = n.replicateAndWait(); !success {
+			util.WriteWarning("T%d, Node%d process cmd (L%d) but failed to replicate and commit", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
+		}
 	}
 
 	n.mu.Unlock()
 
-	if success {
-		return &ExecuteReply{NodeID: n.nodeID, Success: true}, nil
+	if isLeader {
+		return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
 	}
 
 	// proxy to leader instead, no lock needed
@@ -362,13 +367,13 @@ func (n *node) startElection() {
 	}
 
 	// request vote (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.handleRequestVoteReply(reply) })
+	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.onRequestVoteReply(reply) })
 
 	n.refreshTimer()
 }
 
 // callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
-func (n *node) handleRequestVoteReply(reply *RequestVoteReply) {
+func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
 	if reply == nil {
 		return
 	}
@@ -401,7 +406,7 @@ func (n *node) sendHeartbeat() {
 		util.WriteTrace("T%d: \U0001f493 Node%d sending heartbeat to Node%d, prevIndex %d\n", n.currentTerm, n.nodeID, peer.NodeID, req.PrevLogIndex)
 
 		// send heart beat (on different goroutines), response will be processed there
-		n.peerMgr.AppendEntries(peer.NodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.AppendEntries(peer.NodeID, req, n.onHeartbeatReply)
 	}
 
 	// 5.2 - refresh timer
@@ -409,23 +414,52 @@ func (n *node) sendHeartbeat() {
 }
 
 // replicateAndWait replicates logs to all followers and wait for their response
-func (n *node) replicateAndWait() {
-	// TODO[sidecus]: We still need to wait for majority to agree, it's key for raft.
-	// Right now we don't wait for response
+// returns true if majority of the followers match lastIndex
+func (n *node) replicateAndWait() bool {
+	peerCnt := len(n.peerMgr.GetAllPeers())
+	replies := make(chan *AppendEntriesReply, peerCnt)
+	var wg sync.WaitGroup
+
 	// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit,
 	// as well infinite retry upon failure.
+	// We do this on different goroutines and wait for them to finish
+	wg.Add(peerCnt)
 	for _, follower := range n.peerMgr.GetAllPeers() {
-		n.replicateToFollower(follower.NodeID)
+		followerID := follower.NodeID
+		go n.replicateToFollower(followerID, func(reply *AppendEntriesReply) {
+			util.WriteInfo("T%d: Received reply from Node%d. reply: %v", n.currentTerm, followerID, reply)
+			replies <- reply
+			wg.Done()
+		})
 	}
+	wg.Wait()
+	close(replies)
+
+	for reply := range replies {
+		// If RPC call fails, reply will be nil
+		if reply != nil {
+			n.peerMgr.UpdateFollowerMatchIndex(reply.NodeID, reply.Success, reply.LastMatch)
+		}
+	}
+
+	// If we have majority matches the last entry, commit
+	if n.peerMgr.MajorityMatch(n.logMgr.LastIndex()) {
+		n.commitTo(n.logMgr.LastIndex())
+		return n.logMgr.CommitIndex() == n.logMgr.LastIndex()
+	}
+
+	return false
 }
 
 // replicateToFollower replicate logs to follower as needed
-// This should be only be called by leader
-func (n *node) replicateToFollower(targetNodeID int) bool {
+// This should be only be called by leader.
+// This function needs to gaurantee callback is always called. Upon failure it should be called with nil.
+func (n *node) replicateToFollower(targetNodeID int, onReply func(*AppendEntriesReply)) bool {
 	follower := n.peerMgr.GetPeer(targetNodeID)
 
 	if follower.nextIndex > n.logMgr.LastIndex() {
 		// nothing to replicate
+		onReply(nil)
 		return false
 	}
 
@@ -434,7 +468,7 @@ func (n *node) replicateToFollower(targetNodeID int) bool {
 		req := n.createSnapshotRequest()
 
 		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
-		n.peerMgr.InstallSnapshot(follower.NodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.InstallSnapshot(follower.NodeID, req, onReply)
 	} else {
 		// there are logs to replicate, create AE request and send
 		req := n.createAERequest(follower.nextIndex, maxAppendEntriesCount)
@@ -442,15 +476,15 @@ func (n *node) replicateToFollower(targetNodeID int) bool {
 		maxIdx := req.Entries[len(req.Entries)-1].Index
 
 		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
-		n.peerMgr.AppendEntries(follower.NodeID, req, n.handleAppendEntriesReply)
+		n.peerMgr.AppendEntries(follower.NodeID, req, onReply)
 	}
 
 	return true
 }
 
-// handleAppendEntriesReply handles append entries reply. Need locking since this will be
+// onHeartbeatReply handles append entries reply for heatbeats. Need locking since this will be
 // running on different goroutine for reply from each node
-func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
+func (n *node) onHeartbeatReply(reply *AppendEntriesReply) {
 	if reply == nil {
 		return
 	}
@@ -478,9 +512,9 @@ func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
 	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
 	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
 
-	// Check whether there are logs to commit and then replicate
+	// Check whether there are logs to commit and then replicate more if needed
 	n.leaderCommit()
-	n.replicateToFollower(followerID)
+	n.replicateToFollower(followerID, n.onHeartbeatReply)
 }
 
 // leaderCommit commits logs as needed by checking each follower's match index

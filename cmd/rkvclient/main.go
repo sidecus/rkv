@@ -85,11 +85,13 @@ func benchmark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
 	for i := 0; i < times; i++ {
 		wg.Add(1)
 		go func(i int) {
-			_, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
-			if err == nil {
+			r, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
+			if err == nil && r.Success {
 				successCount++
-			} else {
+			} else if err != nil {
 				fmt.Println(err)
+			} else {
+				fmt.Println("Leader processes but failed to commit in time")
 			}
 			wg.Done()
 		}(i)
