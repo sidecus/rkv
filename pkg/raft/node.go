@@ -165,7 +165,7 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 		// Process the command, then replicate to followers
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
 		if success = n.tryReplicateAndCommitLastEntry(); !success {
-			util.WriteWarning("T%d, Node%d process cmd (L%d) but failed to replicate and commit", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
+			util.WriteWarning("T%d, Node%d processed L%d but failed to replicate to majority. Leaving it to heartbeat replication.", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
 		}
 	}
 
@@ -481,6 +481,8 @@ func (n *node) tryReplicateAndCommitLastEntry() bool {
 	if n.peerMgr.MajorityMatch(n.logMgr.LastIndex()) {
 		n.commitTo(n.logMgr.LastIndex())
 		return n.logMgr.CommitIndex() == n.logMgr.LastIndex()
+	} else {
+		util.WriteWarning("T%d: Leader%d could not get consensus on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
 	}
 
 	return false
@@ -507,7 +509,7 @@ func (n *node) replicateToFollower(targetNodeID int, isHeartbeat bool, onReply f
 		} else {
 			// skip snapshot for non heartbeat triggered replication - this will avoid situations where a node is down and leader keeps on sending snapshot
 			// upon execute requests. Should give us a small perf gain
-			util.WriteInfo("T%d: Node%d skip sending snapshot to Node%d for non heartbeat based replication\n", n.currentTerm, n.nodeID, targetNodeID)
+			util.WriteTrace("T%d: Node%d skip sending snapshot to Node%d for non heartbeat based replication\n", n.currentTerm, n.nodeID, targetNodeID)
 			onReply(nil)
 			return
 		}
@@ -517,7 +519,7 @@ func (n *node) replicateToFollower(targetNodeID int, isHeartbeat bool, onReply f
 		minIdx := req.Entries[0].Index
 		maxIdx := req.Entries[len(req.Entries)-1].Index
 
-		util.WriteInfo("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
+		util.WriteTrace("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
 		n.peerMgr.AppendEntries(follower.NodeID, req, onReply)
 	}
 }

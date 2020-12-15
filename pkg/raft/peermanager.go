@@ -25,15 +25,15 @@ type NodeInfo struct {
 type IPeerProxy interface {
 	// AppendEntries calls a peer node to append entries.
 	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	AppendEntries(req *AppendEntriesRequest, onReply func(*AppendEntriesReply))
+	AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error)
 
 	// RequestVote calls a peer node to vote.
 	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	RequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply))
+	RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error)
 
 	// InstallSnapshot calls a peer node to install a snapshot.
 	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	InstallSnapshot(req *SnapshotRequest, onReply func(*AppendEntriesReply))
+	InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error)
 
 	// Get invokes a peer node to get values
 	Get(req *GetRequest) (*GetReply, error)
@@ -163,8 +163,14 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onR
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
-		// Only proceed if this is a heartbeat or there is no other replication in progress
-		peer.proxy.AppendEntries(req, onReply)
+		reply, err := peer.proxy.AppendEntries(req)
+
+		if err != nil {
+			util.WriteTrace("AppendEntry call failed to Node%d", nodeID)
+			reply = nil
+		}
+
+		onReply(reply)
 	}()
 }
 
@@ -173,7 +179,14 @@ func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onRepl
 	peer := mgr.GetPeer(nodeID)
 
 	go func() {
-		peer.proxy.InstallSnapshot(req, onReply)
+		reply, err := peer.proxy.InstallSnapshot(req)
+
+		if err != nil {
+			util.WriteTrace("InstallSnapshot call failed to Node%d", nodeID)
+			reply = nil
+		}
+
+		onReply(reply)
 	}()
 }
 
@@ -181,7 +194,14 @@ func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onRepl
 func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
 	peer := mgr.GetPeer(nodeID)
 	go func() {
-		peer.proxy.RequestVote(req, onReply)
+		reply, err := peer.proxy.RequestVote(req)
+
+		if err != nil {
+			util.WriteTrace("RequestVote call failed to Node%d", nodeID)
+			reply = nil
+		}
+
+		onReply(reply)
 	}()
 }
 

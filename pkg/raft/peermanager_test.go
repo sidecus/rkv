@@ -11,24 +11,24 @@ type PeerProxyMock struct {
 	nodeID int
 }
 
-func (proxy *PeerProxyMock) AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
-	callback(&AppendEntriesReply{
+func (proxy *PeerProxyMock) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{
 		NodeID:    proxy.nodeID,
 		Term:      req.Term,
 		LastMatch: req.PrevLogIndex + len(req.Entries),
 		Success:   true,
-	})
+	}, nil
 }
-func (proxy *PeerProxyMock) RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
-	callback(nil)
+func (proxy *PeerProxyMock) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+	return nil, nil
 }
-func (proxy *PeerProxyMock) InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply)) {
-	callback(&AppendEntriesReply{
+func (proxy *PeerProxyMock) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{
 		NodeID:    proxy.nodeID,
 		Term:      req.Term,
 		LastMatch: req.SnapshotIndex,
 		Success:   true,
-	})
+	}, nil
 }
 func (proxy *PeerProxyMock) Get(req *GetRequest) (*GetReply, error) {
 	return nil, nil

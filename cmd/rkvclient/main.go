@@ -89,9 +89,9 @@ func benchmark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
 			if err == nil && r.Success {
 				successCount++
 			} else if err != nil {
-				fmt.Println(err)
+				// fmt.Println(err)
 			} else {
-				fmt.Println("Leader processes but failed to commit in time")
+				// fmt.Println("Leader processed but failed to commit in time")
 			}
 			wg.Done()
 		}(i)

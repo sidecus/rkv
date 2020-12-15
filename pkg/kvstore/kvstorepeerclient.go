@@ -51,81 +51,61 @@ func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, onReply func(*raft.AppendEntriesReply)) {
+func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
-	// Makesure onReply is called regardless of what happens
-	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
-	// Here we use a closure to make sure latest value of reply is used
-	var reply *raft.AppendEntriesReply
-	defer func() { onReply(reply) }()
-
-	ae := fromRaftAERequest(req)
-	if resp, err := proxy.client.AppendEntries(ctx, ae); err != nil {
-		util.WriteTrace("Error sending AppendEntries message to Node%d. %s", proxy.NodeID, err)
-	} else {
+	var resp *pb.AppendEntriesReply
+	if resp, err = proxy.client.AppendEntries(ctx, fromRaftAERequest(req)); err == nil {
 		reply = toRaftAEReply(resp)
 	}
+
+	return reply, nil
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, onReply func(*raft.RequestVoteReply)) {
+func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
-	// Makesure onReply is called regardless of what happens
-	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
-	// Here we use a closure to make sure latest value of reply is used
-	var reply *raft.RequestVoteReply
-	defer func() { onReply(reply) }()
-
+	var resp *pb.RequestVoteReply
 	rv := fromRaftRVRequest(req)
-	if resp, err := proxy.client.RequestVote(ctx, rv); err != nil {
-		util.WriteTrace("Error sending RequestVote messageto Node%d. %s", proxy.NodeID, err)
-	} else {
+	if resp, err = proxy.client.RequestVote(ctx, rv); err == nil {
 		reply = toRaftRVReply(resp)
 	}
+
+	return reply, err
 }
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 // onReply is gauranteed to be called
-func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, onReply func(*raft.AppendEntriesReply)) {
+func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
-	// Makesure onReply is called regardless of what happens
-	// Note we cannot use "defer onReply(reply)" directly since param evaluation happens when defer is called and it will be nil
-	// Here we use a closure to make sure latest value of reply is used
-	var reply *raft.AppendEntriesReply
-	defer func() { onReply(reply) }()
-
 	stream, err := proxy.client.InstallSnapshot(ctx)
 	if err != nil {
-		util.WriteTrace("Error opening gRPC snapshot stream with Node%d. %s", proxy.NodeID, err)
-		return
+		return nil, err
 	}
 
 	reader, err := raft.ReadSnapshot(req.File)
 	if err != nil {
-		util.WriteError("Error opening snapshot file. %s", err)
-		return
+		return nil, err
 	}
 
 	defer reader.Close()
 	writer := newGRPCSnapshotStreamWriter(req, stream)
-	if _, err := io.Copy(writer, reader); err != nil {
-		util.WriteError("Error sending snapshot. %s", err)
-		return
+	if _, err = io.Copy(writer, reader); err != nil {
+		return nil, err
 	}
 
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
-		util.WriteError("Error waiting for snapshot reply. %s", err)
-		return
+		return nil, err
 	}
 
 	reply = toRaftAEReply(resp)
+	return reply, nil
 }
 
 // Get gets values from state machine against leader
