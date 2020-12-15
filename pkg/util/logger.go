@@ -10,8 +10,10 @@ const (
 	LevelWarning = 2
 	// LevelInfo, warning and error
 	LevelInfo = 3
-	// All
+	// Info, warning, error and trace
 	LevelTrace = 4
+	// All
+	LevelVerbose = 5
 )
 
 // raft logger and log level
@@ -22,9 +24,6 @@ var logLevel = LevelInfo
 func SetLogLevel(level int) {
 	if level < LevelError {
 		level = LevelError
-	}
-	if level > LevelTrace {
-		level = LevelTrace
 	}
 
 	logLevel = level
@@ -55,6 +54,11 @@ func WriteInfo(format string, v ...interface{}) {
 // WriteTrace writes traces and debug information
 func WriteTrace(format string, v ...interface{}) {
 	WriteLog(LevelTrace, format, v...)
+}
+
+// WriteVerbose writes verbose infromation
+func WriteVerbose(format string, v ...interface{}) {
+	WriteLog(LevelVerbose, format, v...)
 }
 
 // Panicf is equivalent to l.Printf() followed by a call to panic().

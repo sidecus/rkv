@@ -129,11 +129,11 @@ func (mgr *PeerManager) UpdateFollowerMatchIndex(nodeID int, matched bool, lastM
 	peer := mgr.GetPeer(nodeID)
 
 	if matched {
-		util.WriteTrace("Updating Node%d nextIndex. lastMatch %d", nodeID, lastMatch)
+		util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", nodeID, lastMatch)
 		peer.nextIndex = lastMatch + 1
 		peer.matchIndex = lastMatch
 	} else {
-		util.WriteTrace("Decreasing Node%d nextIndex.", nodeID)
+		util.WriteVerbose("Decreasing Node%d's nextIndex.", nodeID)
 		// prev entries don't match. decrement nextIndex.
 		// cap it to 0. It is meaningless when less than zero
 		peer.nextIndex = util.Max(0, peer.nextIndex-nextIndexFallbackStep)
@@ -166,7 +166,7 @@ func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onR
 		reply, err := peer.proxy.AppendEntries(req)
 
 		if err != nil {
-			util.WriteTrace("AppendEntry call failed to Node%d", nodeID)
+			util.WriteTrace("AppendEntry call failed to Node%d: %s", nodeID, err)
 			reply = nil
 		}
 
@@ -182,7 +182,7 @@ func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onRepl
 		reply, err := peer.proxy.InstallSnapshot(req)
 
 		if err != nil {
-			util.WriteTrace("InstallSnapshot call failed to Node%d", nodeID)
+			util.WriteTrace("InstallSnapshot call failed to Node%d: %s", nodeID, err)
 			reply = nil
 		}
 
@@ -197,7 +197,7 @@ func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply
 		reply, err := peer.proxy.RequestVote(req)
 
 		if err != nil {
-			util.WriteTrace("RequestVote call failed to Node%d", nodeID)
+			util.WriteTrace("RequestVote call failed to Node%d: %s", nodeID, err)
 			reply = nil
 		}
 

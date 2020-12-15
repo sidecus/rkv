@@ -223,10 +223,10 @@ func TestCommit(t *testing.T) {
 	entries := generateTestEntries(-1, 1)
 	lm.ProcessLogs(-1, -1, entries)
 
-	// try commit to a much larger index
-	ret, _ := lm.Commit(3)
+	// try commit to last index
+	ret, _ := lm.CommitAndApply(lm.lastIndex)
 	if !ret {
-		t.Error("commit to larger index should commit to last log entry correctly")
+		t.Error("commit to last index should commit to last log entry correctly")
 	}
 	if lm.CommitIndex() != lm.LastIndex() {
 		t.Error("commit should update commitIndex correctly")
@@ -236,9 +236,19 @@ func TestCommit(t *testing.T) {
 	}
 
 	// commit again does nothing
-	ret, _ = lm.Commit(5)
+	ret, _ = lm.CommitAndApply(lm.lastIndex)
 	if ret {
 		t.Error("commit should be idempotent, and return false on second try")
+	}
+
+	if lm.CommitIndex() != 1 || lm.lastApplied != 1 || lm.lastApplied != sm.lastApplied {
+		t.Error("noop commit not change anything")
+	}
+
+	// commit to smaller index does nothing
+	ret, _ = lm.CommitAndApply(lm.commitIndex - 1)
+	if ret {
+		t.Error("commit should do nothing on a value smaller than commit index, and return false on second try")
 	}
 
 	if lm.CommitIndex() != 1 || lm.lastApplied != 1 || lm.lastApplied != sm.lastApplied {
@@ -526,7 +536,7 @@ func TestSnapshot(t *testing.T) {
 		},
 	}
 	lmSrc.ProcessLogs(-1, -1, []LogEntry{entry})
-	lmSrc.Commit(0)
+	lmSrc.CommitAndApply(0)
 	testSnapshot(lmSrc, lmDst, t)
 
 	// Add more entries to src
@@ -539,7 +549,7 @@ func TestSnapshot(t *testing.T) {
 		},
 	}
 	lmSrc.ProcessLogs(0, 1, []LogEntry{entry})
-	lmSrc.Commit(1)
+	lmSrc.CommitAndApply(1)
 	testSnapshot(lmSrc, lmDst, t)
 
 	// logs in dst should be cleared
