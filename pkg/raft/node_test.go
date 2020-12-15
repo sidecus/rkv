@@ -232,7 +232,7 @@ func TestLeaderCommit(t *testing.T) {
 	}
 
 	// We only have a match on 1st entry, but it's of a lower term
-	n.leaderCommit()
+	n.tryCommitUponHeartbeatReplies()
 	if logMgr.commitIndex != -1 {
 		t.Error("leaderCommit shall not commit entries from previous term")
 	}
@@ -242,7 +242,7 @@ func TestLeaderCommit(t *testing.T) {
 
 	// We only have a majority match on 2nd entry in the same term
 	peerMgr.GetPeer(1).matchIndex = 2
-	n.leaderCommit()
+	n.tryCommitUponHeartbeatReplies()
 	if logMgr.commitIndex != 2 {
 		t.Error("leaderCommit shall commit to the right entry")
 	}
@@ -252,10 +252,9 @@ func TestLeaderCommit(t *testing.T) {
 }
 
 func TestReplicateToFollower(t *testing.T) {
-	sm := &testStateMachine{
+	logMgr := NewLogMgr(100, &testStateMachine{
 		lastApplied: -111,
-	}
-	logMgr := NewLogMgr(100, sm).(*LogManager)
+	}).(*LogManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,
@@ -263,78 +262,78 @@ func TestReplicateToFollower(t *testing.T) {
 		}, i+1)
 	}
 
+	peerMgr := &mockPeerManager{}
+
 	n := &node{
 		nodeID:      2,
 		clusterSize: 3,
 		currentTerm: 3,
 		logMgr:      logMgr,
-		peerMgr:     createTestPeerManager(1),
+		peerMgr:     peerMgr,
 	}
 
-	peer0 := n.peerMgr.GetPeer(0)
+	onAEReply := func(*AppendEntriesReply) {}
 
 	// nextIndex is larger than lastIndex, nothing to replicate
-	peer0.nextIndex = logMgr.lastIndex + 1
-	peer0.matchIndex = 1
-	ret := n.replicateToFollower(0, n.onHeartbeatReply)
-	if ret {
+	peerMgr.reset()
+	peer1 := peerMgr.GetPeer(1)
+	peer1.nextIndex = logMgr.lastIndex + 1
+	peer1.matchIndex = 1
+	n.replicateToFollower(1, true, onAEReply)
+	if peerMgr.aeReq != nil {
 		t.Error("replicateLogsTo should not replicate when nextIndex is high enough")
 	}
 
 	// nextIndex is smaler than lastIndex
-	peer0.nextIndex = 2
-	peer0.matchIndex = 1
-	ret = n.replicateToFollower(0, n.onHeartbeatReply)
-	if !ret {
-		t.Error("replicateLogsTo should replicate logs but it didn't")
+	peerMgr.reset()
+	peer1.nextIndex = logMgr.lastIndex - 2
+	peer1.matchIndex = 1
+	n.replicateToFollower(1, true, onAEReply)
+	if peerMgr.aeReq == nil {
+		t.Error("replicateLogsTo should replicate when nextIndex smaller")
 	}
-	lastAEReq := peer0.proxy.(*PeerProxyMock).expectAECall()
-	if lastAEReq == nil {
-		t.Error("replicateLogsTo replicate with a nil request")
-	}
-	if lastAEReq.LeaderID != n.nodeID || lastAEReq.Term != 3 ||
-		lastAEReq.PrevLogIndex != 1 || lastAEReq.PrevLogTerm != 2 {
+	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
+		peerMgr.aeReq.PrevLogIndex != peer1.nextIndex-1 || peerMgr.aeReq.PrevLogTerm != logMgr.logs[peerMgr.aeReq.PrevLogIndex].Term {
 		t.Error("wrong info are being replicated")
 	}
-	if len(lastAEReq.Entries) != 3 || lastAEReq.Entries[0].Index != 2 {
+	if len(peerMgr.aeReq.Entries) != 3 || peerMgr.aeReq.Entries[0].Index != logMgr.logs[logMgr.lastIndex-2].Index {
 		t.Error("replicated entries contain bad entries")
 	}
 
 	// nextIndex is the same as snapshotIndex
+	peerMgr.reset()
 	logMgr.snapshotIndex = 3
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshot"
-	peer0.nextIndex = 3
-	ret = n.replicateToFollower(0, n.onHeartbeatReply)
-	if !ret {
-		t.Error("replicateLogsTo should replicate snapshot but it didn't")
+	peer1.nextIndex = 3
+	n.replicateToFollower(1, true, onAEReply)
+	if peerMgr.isReq == nil {
+		t.Error("replicateLogsTo should replicate snapshot but it didn't (or replicated more than once)")
 	}
-	lastISReq := peer0.proxy.(*PeerProxyMock).expectISCall()
-	if lastISReq == nil {
-		t.Error("replicateLogsTo replicate snapshot with a nil request")
-	}
-	if lastISReq.LeaderID != n.nodeID || lastISReq.Term != 3 ||
-		lastISReq.File != "snapshot" || lastISReq.SnapshotIndex != 3 ||
-		lastISReq.SnapshotTerm != 2 {
+	if peerMgr.isReq.LeaderID != n.nodeID || peerMgr.isReq.Term != n.currentTerm ||
+		peerMgr.isReq.File != logMgr.lastSnapshotFile ||
+		peerMgr.isReq.SnapshotIndex != logMgr.snapshotIndex || peerMgr.isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
 
+	// Non heartbeat replication should not trigger snapshot
+	peerMgr.reset()
+	n.replicateToFollower(1, false, onAEReply)
+	if peerMgr.isReq != nil {
+		t.Error("replicateLogsTo should not replicate snapshot upon non heartbeat replication")
+	}
+
 	// nextIndex is smaller than snapshotIndex
-	logMgr.snapshotIndex = 3
-	logMgr.snapshotTerm = 2
+	peerMgr.reset()
+	logMgr.snapshotIndex = 5
+	logMgr.snapshotTerm = 3
 	logMgr.lastSnapshotFile = "snapshotsmaller"
-	peer0.nextIndex = 2
-	ret = n.replicateToFollower(0, n.onHeartbeatReply)
-	if !ret {
+	peer1.nextIndex = 4
+	n.replicateToFollower(1, true, n.onHeartbeatReply)
+	if peerMgr.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}
-	lastISReq = peer0.proxy.(*PeerProxyMock).expectISCall()
-	if lastISReq == nil {
-		t.Error("replicateLogsTo replicate snapshot with a nil request")
-	}
-	if lastISReq.LeaderID != n.nodeID || lastISReq.Term != 3 ||
-		lastISReq.File != "snapshotsmaller" || lastISReq.SnapshotIndex != 3 ||
-		lastISReq.SnapshotTerm != 2 {
+	if peerMgr.isReq.LeaderID != n.nodeID || peerMgr.isReq.Term != n.currentTerm || peerMgr.isReq.File != logMgr.lastSnapshotFile || peerMgr.isReq.SnapshotIndex != logMgr.snapshotIndex || peerMgr.isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
 }
@@ -354,4 +353,81 @@ func TestWonElection(t *testing.T) {
 		t.Error("wonElection should return true on 2 votes out of 3")
 	}
 
+}
+
+type mockPeerManager struct {
+	nodeID  int
+	aeReq   *AppendEntriesRequest
+	rvReq   *RequestVoteRequest
+	isReq   *SnapshotRequest
+	getReq  *GetRequest
+	execReq *StateMachineCmd
+	peer    *Peer
+}
+
+func (pm *mockPeerManager) reset() {
+	pm.nodeID = 0
+	pm.aeReq = nil
+	pm.rvReq = nil
+	pm.isReq = nil
+	pm.getReq = nil
+	pm.execReq = nil
+}
+
+func (pm *mockPeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply)) {
+	pm.nodeID = nodeID
+	pm.aeReq = req
+}
+func (pm *mockPeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
+	pm.nodeID = nodeID
+	pm.rvReq = req
+}
+func (pm *mockPeerManager) BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
+	pm.nodeID = -1 //means all
+	pm.rvReq = req
+}
+
+func (pm *mockPeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply)) {
+	pm.nodeID = nodeID
+	pm.isReq = req
+}
+
+func (pm *mockPeerManager) Get(nodeID int, req *GetRequest) (*GetReply, error) {
+	pm.nodeID = nodeID
+	pm.getReq = req
+
+	return nil, nil
+}
+
+func (pm *mockPeerManager) Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	pm.nodeID = nodeID
+	pm.execReq = cmd
+	return nil, nil
+}
+
+func (pm *mockPeerManager) GetAllPeers() map[int]*Peer {
+	return nil
+}
+
+func (pm *mockPeerManager) GetPeer(nodeID int) *Peer {
+	if pm.peer == nil {
+		pm.peer = &Peer{
+			NodeInfo: NodeInfo{
+				NodeID: nodeID,
+			},
+		}
+	}
+
+	return pm.peer
+}
+
+func (pm *mockPeerManager) ResetFollowerIndicies(lastLogIndex int) {
+
+}
+
+func (pm *mockPeerManager) UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int) {
+
+}
+func (pm *mockPeerManager) MajorityMatch(logIndex int) bool {
+	return false
 }
