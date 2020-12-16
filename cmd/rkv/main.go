@@ -45,10 +45,10 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("rkv -nodeid id -addresses node0address,node1address,node2addresses... -loglevel 1-4")
+	fmt.Println("rkv -nodeid id -addresses node0address:port,node1address:port,node2addresses:port... -loglevel level")
 	fmt.Println("   -id: 0 based current node ID, indexed into addresses to get local port")
 	fmt.Println("   -addresses: comma separated server:port for all nodes")
-	fmt.Println("   -loglevel: number 1-4 (1 - error, 2 - warning, 3 - info, 4 - traces), default 3")
+	fmt.Println("   -loglevel: number 1-4 (1 - error, 2 - warning, 3 - info, 4 - traces, 5 - verbose), default 3")
 }
 
 func runRPC(nodeID int, port string, addresses []string) {

@@ -251,7 +251,7 @@ func TestLeaderCommit(t *testing.T) {
 	}
 }
 
-func TestReplicateToFollower(t *testing.T) {
+func TestReplicateData(t *testing.T) {
 	logMgr := NewLogMgr(100, &testStateMachine{
 		lastApplied: -111,
 	}).(*LogManager)
@@ -274,21 +274,28 @@ func TestReplicateToFollower(t *testing.T) {
 
 	onAEReply := func(*AppendEntriesReply) {}
 
-	// nextIndex is larger than lastIndex, nothing to replicate
+	// nextIndex is larger than lastIndex, should send empty request
 	peerMgr.reset()
 	peer1 := peerMgr.GetPeer(1)
 	peer1.nextIndex = logMgr.lastIndex + 1
 	peer1.matchIndex = 1
-	n.replicateToFollower(1, true, onAEReply)
-	if peerMgr.aeReq != nil {
-		t.Error("replicateLogsTo should not replicate when nextIndex is high enough")
+	n.replicateData(peer1, true, onAEReply)
+	if peerMgr.aeReq == nil {
+		t.Error("replicateData should replicate even when nextIndex is higher than lastIndex")
+	}
+	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
+		peerMgr.aeReq.PrevLogIndex != peer1.nextIndex-1 || peerMgr.aeReq.PrevLogTerm != logMgr.logs[peerMgr.aeReq.PrevLogIndex].Term {
+		t.Error("wrong info are being replicated")
+	}
+	if len(peerMgr.aeReq.Entries) != 0 {
+		t.Error("wrong payload when nextIndex is higher than lastIndex")
 	}
 
 	// nextIndex is smaler than lastIndex
 	peerMgr.reset()
 	peer1.nextIndex = logMgr.lastIndex - 2
 	peer1.matchIndex = 1
-	n.replicateToFollower(1, true, onAEReply)
+	n.replicateData(peer1, true, onAEReply)
 	if peerMgr.aeReq == nil {
 		t.Error("replicateLogsTo should replicate when nextIndex smaller")
 	}
@@ -300,13 +307,13 @@ func TestReplicateToFollower(t *testing.T) {
 		t.Error("replicated entries contain bad entries")
 	}
 
-	// nextIndex is the same as snapshotIndex
+	// nextIndex is the same as snapshotIndex, none heartbeat should trigger snapshot request
 	peerMgr.reset()
 	logMgr.snapshotIndex = 3
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshot"
 	peer1.nextIndex = 3
-	n.replicateToFollower(1, true, onAEReply)
+	n.replicateData(peer1, false, onAEReply)
 	if peerMgr.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't (or replicated more than once)")
 	}
@@ -315,12 +322,18 @@ func TestReplicateToFollower(t *testing.T) {
 		peerMgr.isReq.SnapshotIndex != logMgr.snapshotIndex || peerMgr.isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
-
-	// Non heartbeat replication should not trigger snapshot
+	// heartbeat should not trigger snapshot
 	peerMgr.reset()
-	n.replicateToFollower(1, false, onAEReply)
-	if peerMgr.isReq != nil {
-		t.Error("replicateLogsTo should not replicate snapshot upon non heartbeat replication")
+	n.replicateData(peer1, true, onAEReply)
+	if peerMgr.isReq != nil || peerMgr.aeReq == nil {
+		t.Error("replicateData should not replicate snapshot upon heartbeat")
+	}
+	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
+		peerMgr.aeReq.PrevLogIndex != logMgr.snapshotIndex || peerMgr.aeReq.PrevLogTerm != logMgr.snapshotTerm {
+		t.Error("wrong info are being replicated")
+	}
+	if len(peerMgr.aeReq.Entries) != 0 {
+		t.Error("wrong payload when nextIndex is higher than lastIndex")
 	}
 
 	// nextIndex is smaller than snapshotIndex
@@ -329,7 +342,7 @@ func TestReplicateToFollower(t *testing.T) {
 	logMgr.snapshotTerm = 3
 	logMgr.lastSnapshotFile = "snapshotsmaller"
 	peer1.nextIndex = 4
-	n.replicateToFollower(1, true, n.onHeartbeatReply)
+	n.replicateData(peer1, false, n.onHeartbeatReply)
 	if peerMgr.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}

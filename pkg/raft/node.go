@@ -164,7 +164,7 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	if isLeader {
 		// Process the command, then replicate to followers
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-		if success = n.tryReplicateAndCommitLastEntry(); !success {
+		if success = n.tryReplicateAndCommitNewEntry(); !success {
 			util.WriteWarning("T%d, Node%d processed L%d but failed to replicate to majority. Leaving it to heartbeat replication.", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
 		}
 	}
@@ -224,14 +224,13 @@ func (n *node) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error
 	success := false
 	lastMatchIndex := -1
 	if req.Term >= n.currentTerm {
-		// TODO[sidecus]: test case for the if branch
 		if n.logMgr.SnapshotIndex() == req.SnapshotIndex && n.logMgr.SnapshotTerm() == req.SnapshotTerm {
-			util.WriteInfo("T%d: Node%d ignoring already installed snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
+			util.WriteInfo("T%d: Node%d ignoring duplicate T%dL%d snapshot from Node%d\n", n.currentTerm, n.nodeID, req.SnapshotTerm, req.SnapshotIndex, req.LeaderID)
 			success = true
 			lastMatchIndex = req.SnapshotIndex
 		} else {
 			// only process logs when term is valid
-			util.WriteInfo("T%d: Node%d installing snapshot from Node%d upto L%d\n", n.currentTerm, n.nodeID, req.LeaderID, req.SnapshotIndex)
+			util.WriteInfo("T%d: Node%d installing T%dL%d snapshot from Node%d\n", n.currentTerm, n.nodeID, req.SnapshotTerm, req.SnapshotIndex, req.LeaderID)
 			err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
 			if err == nil {
 				success = true
@@ -287,10 +286,10 @@ func (n *node) onTimer(state NodeState, term int) {
 	defer n.mu.Unlock()
 
 	if state == n.nodeState && term == n.currentTerm {
-		if n.nodeState == Follower || n.nodeState == Candidate {
-			n.startElection()
-		} else if n.nodeState == Leader {
+		if n.nodeState == Leader {
 			n.sendHeartbeat()
+		} else {
+			n.startElection()
 		}
 	}
 }
@@ -339,6 +338,7 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 	if newTerm > n.currentTerm {
 		// Follow newer term right away. sourceNodeID might not be the new leader, but it potentially
 		// has better knowledge of the leader than us
+		util.WriteInfo("T%d: Received new term from Node%d, newTerm:%d.\n", n.currentTerm, sourceNodeID, newTerm)
 		follow = true
 	} else if newTerm == n.currentTerm && isAppendEntries {
 		// For AE calls, we should follow even term is the same
@@ -381,16 +381,17 @@ func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
 	defer n.mu.Unlock()
 
 	if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
-		// there is a higher term, no need to continue
-		return
+		return // there is a higher term, no need to continue
 	}
 
 	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
 		// stale vote or denied, ignore
+		util.WriteTrace("T%d: Stale or ungranted vote received from Node%d, term:%d, voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
 		return
 	}
 
 	// record and count votes
+	util.WriteTrace("T%d: Vote received from Node%d, term:%d\n", n.currentTerm, reply.NodeID, reply.VotedTerm)
 	n.votes[reply.NodeID] = true
 	if n.wonElection() {
 		n.enterLeaderState()
@@ -400,12 +401,8 @@ func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
 
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
-	for _, peer := range n.peerMgr.GetAllPeers() {
-		req := n.createAERequest(peer.nextIndex, 0)
-		util.WriteVerbose("T%d: \U0001f493 Node%d sending heartbeat to Node%d, prevIndex %d, prevTerm %d\n", n.currentTerm, n.nodeID, peer.NodeID, req.PrevLogIndex, req.PrevLogTerm)
-
-		// send heart beat (on different goroutines), response will be processed there
-		n.peerMgr.AppendEntries(peer.NodeID, req, n.onHeartbeatReply)
+	for _, follower := range n.peerMgr.GetAllPeers() {
+		n.replicateData(follower, true, n.onHeartbeatReply)
 	}
 
 	// 5.2 - refresh timer
@@ -439,17 +436,49 @@ func (n *node) onHeartbeatReply(reply *AppendEntriesReply) {
 	// 5.3 update leader indicies.
 	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
 	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
-	// Here we added a LastMatch field on AppendEntries reply. And it's used instead.
+	// Here we added a LastMatch field on AppendEntries reply. And it's used instead
 	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
 
-	// Check whether there are logs to commit and then replicate more if needed
+	// Check whether there are logs to commit
 	n.tryCommitUponHeartbeatReplies()
-	n.replicateToFollower(followerID, true, n.onHeartbeatReply)
+
+	// replicate more if needed
+	follower := n.peerMgr.GetPeer(followerID)
+	if follower.nextIndex <= n.logMgr.LastIndex() {
+		// only replicate more if we haven't caught up
+		n.replicateData(follower, false, n.onHeartbeatReply)
+	}
 }
 
-// tryReplicateAndCommitLastEntry replicates logs to all followers and wait for their response
+// replicate logs if possible (lastIndex > nextIndex > snapshotIndex && matchIndex == nextIndex + 1), otherwise send empty heartbeat
+func (n *node) replicateLogs(follower *Peer, onReply func(*AppendEntriesReply)) {
+	// Send logs
+	maxEntryCount := maxAppendEntriesCount
+	if follower.matchIndex != follower.nextIndex-1 {
+		// if we haven't had a match yet, no need to send any payload
+		maxEntryCount = 0
+	}
+	req := n.createAERequest(follower.nextIndex, maxEntryCount)
+	util.WriteVerbose("T%d: Sending AE to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", n.currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
+	n.peerMgr.AppendEntries(follower.NodeID, req, onReply)
+}
+
+// replicateData replicates data to follower. It takes care of snapshot scenarios, and sends empty payload if follower is catching up.
+// can be used for heartbeat (if there is a snapshot pending we send snapshot instead in the heartbeat)
+func (n *node) replicateData(follower *Peer, skipSnapshot bool, onReply func(*AppendEntriesReply)) {
+	if !skipSnapshot && follower.nextIndex <= n.logMgr.SnapshotIndex() {
+		// Send snapshot if nextIndex is too small and we do want to send snapshot
+		req := n.createSnapshotRequest()
+		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, follower.NodeID, n.logMgr.SnapshotIndex())
+		n.peerMgr.InstallSnapshot(follower.NodeID, req, onReply)
+	} else {
+		n.replicateLogs(follower, onReply)
+	}
+}
+
+// tryReplicateAndCommitNewEntry replicates logs to all followers and wait for their response
 // returns true if majority of the followers match lastIndex
-func (n *node) tryReplicateAndCommitLastEntry() bool {
+func (n *node) tryReplicateAndCommitNewEntry() bool {
 	peerCnt := len(n.peerMgr.GetAllPeers())
 	replies := make(chan *AppendEntriesReply, peerCnt)
 	var wg sync.WaitGroup
@@ -457,14 +486,14 @@ func (n *node) tryReplicateAndCommitLastEntry() bool {
 	// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit,
 	// as well infinite retry upon failure.
 	// We do this on different goroutines and wait for them to finish
+	// This is called right after new log append, so there gauranteed that there is data to replicate for all nodes
 	wg.Add(peerCnt)
 	for _, follower := range n.peerMgr.GetAllPeers() {
-		followerID := follower.NodeID
-		go n.replicateToFollower(followerID, false, func(reply *AppendEntriesReply) {
+		go n.replicateData(follower, true, func(reply *AppendEntriesReply) {
 			if reply != nil {
-				util.WriteVerbose("T%d: Node%d received AE reply from Node%d for Execute replication. Success:%t, lastMatch:%d\n", n.currentTerm, n.nodeID, followerID, reply.Success, reply.LastMatch)
+				util.WriteVerbose("T%d: Execution triggered replication: Node%d received AE reply from Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, n.nodeID, follower.NodeID, reply.Success, reply.LastMatch)
 			} else {
-				util.WriteWarning("T%d: Node%d failed to receive AE reply from Node%d\n", n.currentTerm, n.nodeID, followerID)
+				util.WriteVerbose("T%d: Execution triggered replication: Node%d failed to receive AE reply from Node%d\n", n.currentTerm, n.nodeID, follower.NodeID)
 			}
 			replies <- reply
 			wg.Done()
@@ -473,14 +502,14 @@ func (n *node) tryReplicateAndCommitLastEntry() bool {
 	wg.Wait()
 	close(replies)
 
+	// Update follower indicies from all replies
 	for reply := range replies {
-		// If RPC call fails, reply will be nil, ignore those
 		if reply != nil {
 			n.peerMgr.UpdateFollowerMatchIndex(reply.NodeID, reply.Success, reply.LastMatch)
 		}
 	}
 
-	// If we have majority matches the last entry, commit
+	// If we have majority matche the last entry, commit
 	if n.peerMgr.MajorityMatch(n.logMgr.LastIndex()) {
 		n.commitTo(n.logMgr.LastIndex())
 		return n.logMgr.CommitIndex() == n.logMgr.LastIndex()
@@ -490,44 +519,8 @@ func (n *node) tryReplicateAndCommitLastEntry() bool {
 	return false
 }
 
-// replicateToFollower replicate logs or snapshots to follower as needed
-// This should be only be called by leader.
-// This function needs to gaurantee callback is always called. Upon failure it should be called with nil.
-func (n *node) replicateToFollower(targetNodeID int, isHeartbeat bool, onReply func(*AppendEntriesReply)) {
-	follower := n.peerMgr.GetPeer(targetNodeID)
-
-	if follower.nextIndex > n.logMgr.LastIndex() {
-		// nothing to replicate
-		onReply(nil)
-		return
-	}
-
-	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
-		if isHeartbeat {
-			// Send snapshot if this is a heartbeat
-			req := n.createSnapshotRequest()
-			util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, targetNodeID, n.logMgr.SnapshotIndex())
-			n.peerMgr.InstallSnapshot(follower.NodeID, req, onReply)
-		} else {
-			// skip snapshot for non heartbeat triggered replication - this will avoid situations where a node is down and leader keeps on sending snapshot
-			// upon execute requests. Should give us a small perf gain
-			util.WriteInfo("T%d: Node%d skip sending snapshot to Node%d for non heartbeat based replication\n", n.currentTerm, n.nodeID, targetNodeID)
-			onReply(nil)
-			return
-		}
-	} else {
-		// there are logs to replicate, create AE request and send
-		req := n.createAERequest(follower.nextIndex, maxAppendEntriesCount)
-		minIdx := req.Entries[0].Index
-		maxIdx := req.Entries[len(req.Entries)-1].Index
-
-		util.WriteVerbose("T%d: Node%d replicating logs to Node%d (L%d-L%d)\n", n.currentTerm, n.nodeID, targetNodeID, minIdx, maxIdx)
-		n.peerMgr.AppendEntries(follower.NodeID, req, onReply)
-	}
-}
-
 // tryCommitUponHeartbeatReplies commits logs to the last entry with consensus from majority in the same term
-// This should only be called by leader upon heartbeat
+// This should only be called by leader upon heartbeat response
 func (n *node) tryCommitUponHeartbeatReplies() {
 	commitIndex := n.logMgr.CommitIndex()
 	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
@@ -567,12 +560,13 @@ func (n *node) commitTo(targetCommitIndex int) {
 }
 
 // createAERequest creates an AppendEntriesRequest with proper log payload
-func (n *node) createAERequest(nextIdx int, count int) *AppendEntriesRequest {
+func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
 	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
 	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
 	// That scenario will only happen for heartbeats - and it's ok to change it to point to the first entry in the logs
+	// n.logMgr.GetLogEntries will return empty slice if maxCnt is out of range
 	nextIdx = util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
-	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, nextIdx+count)
+	entris, prevIdx, prevTerm := n.logMgr.GetLogEntries(nextIdx, nextIdx+maxCnt)
 
 	req := &AppendEntriesRequest{
 		Term:         n.currentTerm,

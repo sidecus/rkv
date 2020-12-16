@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 10
+const snapshotEntriesCount = 2000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -115,6 +115,7 @@ func (lm *LogManager) GetLogEntry(index int) LogEntry {
 
 // GetLogEntries returns entries between [start, end).
 // Same behavior as normal slicing but with index shiftted according to snapshotIndex.
+// Additonaly, it adds end boundary protection if it's out of range
 // It also returns the prevIndex/prevTerm
 func (lm *LogManager) GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int) {
 	if start <= lm.snapshotIndex {
