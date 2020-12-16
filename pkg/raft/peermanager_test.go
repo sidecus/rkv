@@ -9,17 +9,26 @@ import (
 // PeerProxy mock
 type PeerProxyMock struct {
 	nodeID int
-	aec    chan *AppendEntriesRequest
-	isc    chan *SnapshotRequest
 }
 
-func (proxy *PeerProxyMock) AppendEntries(req *AppendEntriesRequest, callback func(*AppendEntriesReply)) {
-	proxy.aec <- req
+func (proxy *PeerProxyMock) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{
+		NodeID:    proxy.nodeID,
+		Term:      req.Term,
+		LastMatch: req.PrevLogIndex + len(req.Entries),
+		Success:   true,
+	}, nil
 }
-func (proxy *PeerProxyMock) RequestVote(req *RequestVoteRequest, callback func(*RequestVoteReply)) {
+func (proxy *PeerProxyMock) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+	return nil, nil
 }
-func (proxy *PeerProxyMock) InstallSnapshot(req *SnapshotRequest, callback func(*AppendEntriesReply)) {
-	proxy.isc <- req
+func (proxy *PeerProxyMock) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error) {
+	return &AppendEntriesReply{
+		NodeID:    proxy.nodeID,
+		Term:      req.Term,
+		LastMatch: req.SnapshotIndex,
+		Success:   true,
+	}, nil
 }
 func (proxy *PeerProxyMock) Get(req *GetRequest) (*GetReply, error) {
 	return nil, nil
@@ -28,22 +37,12 @@ func (proxy *PeerProxyMock) Execute(cmd *StateMachineCmd) (*ExecuteReply, error)
 	return nil, nil
 }
 
-func (proxy *PeerProxyMock) expectAECall() *AppendEntriesRequest {
-	return <-proxy.aec
-}
-
-func (proxy *PeerProxyMock) expectISCall() *SnapshotRequest {
-	return <-proxy.isc
-}
-
 // PeerFactory mock
 type PeerFactoryMock struct{}
 
 func (f *PeerFactoryMock) NewPeerProxy(info NodeInfo) IPeerProxy {
 	return &PeerProxyMock{
 		nodeID: info.NodeID,
-		aec:    make(chan *AppendEntriesRequest),
-		isc:    make(chan *SnapshotRequest),
 	}
 }
 

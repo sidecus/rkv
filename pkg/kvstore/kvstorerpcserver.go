@@ -52,7 +52,9 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 	return fromRaftRVReply(resp), nil
 }
 
-// InstallSnapshot installs snapshot on the target node
+// InstallSnapshot installs snapshot on current node
+// TODO[sidecus]: This keeps the reading loop out of raft and it has no idea of chunk reception (and hence no response on each chunk).
+// If the snapshot is big it might cause resending from leader
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
 	// create snapshot reader
 	reader, err := newGRPCSnapshotStreamReader(stream)

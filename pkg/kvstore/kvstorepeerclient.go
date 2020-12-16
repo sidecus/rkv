@@ -24,6 +24,7 @@ var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor 
 
 // KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
 type KVPeerClient struct {
+	raft.NodeInfo
 	client pb.KVStoreRaftClient
 }
 
@@ -41,78 +42,70 @@ func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 	client := pb.NewKVStoreRaftClient(conn)
 
 	return &KVPeerClient{
+		NodeInfo: raft.NodeInfo{
+			NodeID:   info.NodeID,
+			Endpoint: info.Endpoint,
+		},
 		client: client,
 	}
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest, callback func(*raft.AppendEntriesReply)) {
+func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
-	var reply *raft.AppendEntriesReply
-	ae := fromRaftAERequest(req)
-	if resp, err := proxy.client.AppendEntries(ctx, ae); err != nil {
-		//util.WriteError("Error sending AppendEntries message. %s", err)
-	} else {
+	var resp *pb.AppendEntriesReply
+	if resp, err = proxy.client.AppendEntries(ctx, fromRaftAERequest(req)); err == nil {
 		reply = toRaftAEReply(resp)
 	}
 
-	callback(reply)
+	return reply, nil
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest, callback func(*raft.RequestVoteReply)) {
+func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
 
-	var reply *raft.RequestVoteReply
+	var resp *pb.RequestVoteReply
 	rv := fromRaftRVRequest(req)
-	if resp, err := proxy.client.RequestVote(ctx, rv); err != nil {
-		//util.WriteError("Error sending RequestVote message. %s", err)
-	} else {
+	if resp, err = proxy.client.RequestVote(ctx, rv); err == nil {
 		reply = toRaftRVReply(resp)
 	}
 
-	callback(reply)
+	return reply, err
 }
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
-func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest, callback func(*raft.AppendEntriesReply)) {
+// onReply is gauranteed to be called
+func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
 	defer cancel()
 
 	stream, err := proxy.client.InstallSnapshot(ctx)
 	if err != nil {
-		//util.WriteError("Error opening gRPC snapshot stream. %s", err)
-		callback(nil)
-		return
+		return nil, err
 	}
 
 	reader, err := raft.ReadSnapshot(req.File)
 	if err != nil {
-		util.WriteError("Error opening snapshot file. %s", err)
-		callback(nil)
-		return
+		return nil, err
 	}
 
 	defer reader.Close()
 	writer := newGRPCSnapshotStreamWriter(req, stream)
-	if _, err := io.Copy(writer, reader); err != nil {
-		util.WriteError("Error sending snapshot. %s", err)
-		callback(nil)
-		return
+	if _, err = io.Copy(writer, reader); err != nil {
+		return nil, err
 	}
 
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
-		util.WriteError("Error waiting for snapshot reply. %s", err)
-		callback(nil)
-		return
+		return nil, err
 	}
 
-	reply := toRaftAEReply(resp)
-	callback(reply)
+	reply = toRaftAEReply(resp)
+	return reply, nil
 }
 
 // Get gets values from state machine against leader

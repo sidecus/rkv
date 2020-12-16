@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 1000
+const snapshotEntriesCount = 2000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -26,7 +26,7 @@ type ILogManager interface {
 
 	ProcessCmd(cmd StateMachineCmd, term int)
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
-	Commit(targetIndex int) (newCommit bool, newSnapshot bool)
+	CommitAndApply(targetIndex int) (newCommit bool, newSnapshot bool)
 	InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error
 
 	// proxy to state machine
@@ -115,6 +115,7 @@ func (lm *LogManager) GetLogEntry(index int) LogEntry {
 
 // GetLogEntries returns entries between [start, end).
 // Same behavior as normal slicing but with index shiftted according to snapshotIndex.
+// Additonaly, it adds end boundary protection if it's out of range
 // It also returns the prevIndex/prevTerm
 func (lm *LogManager) GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int) {
 	if start <= lm.snapshotIndex {
@@ -159,7 +160,7 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 	lm.validateLogEntries(prevLogIndex, prevLogTerm, entries)
 
 	prevMatch := lm.hasMatchingPrevEntry(prevLogIndex, prevLogTerm)
-	util.WriteTrace("Match on prevIndex(%d) prevTerm(%d): %v", prevLogIndex, prevLogTerm, prevMatch)
+	util.WriteVerbose("Match on prevIndex(%d) prevTerm(%d): %v", prevLogIndex, prevLogTerm, prevMatch)
 	if !prevMatch {
 		return false
 	}
@@ -176,31 +177,31 @@ func (lm *LogManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 	return true
 }
 
-// Commit tries to logs up to the target index
+// CommitAndApply commits logs up to the target index and applies it to state machine
 // returns true if anything is committed
-func (lm *LogManager) Commit(targetIndex int) (newCommit bool, newSnapshot bool) {
-	// cap to lastIndex
-	targetIndex = util.Min(targetIndex, lm.lastIndex)
+func (lm *LogManager) CommitAndApply(targetIndex int) (newCommit bool, newSnapshot bool) {
+	if targetIndex > lm.lastIndex {
+		util.Panicln("Cannot commit to a value larger than last index")
+	}
 	if targetIndex <= lm.commitIndex {
-		// nothing to commit
-		return
+		return // nothing to commit
 	}
 
 	newCommit = true
 
 	// Set new commit index and apply commands to state machine if needed
 	lm.commitIndex = targetIndex
-	if targetIndex > lm.lastApplied {
-		for i := lm.lastApplied + 1; i <= targetIndex; i++ {
+	if lm.commitIndex > lm.lastApplied {
+		for i := lm.lastApplied + 1; i <= lm.commitIndex; i++ {
 			lm.statemachine.Apply(lm.GetLogEntry(i).Cmd)
 		}
-		lm.lastApplied = targetIndex
+		lm.lastApplied = lm.commitIndex
 	}
 
 	// take snapshot if needed
 	if lm.lastApplied-lm.snapshotIndex >= snapshotEntriesCount {
 		if err := lm.TakeSnapshot(); err != nil {
-			util.WriteError("Snapshot failure: %s", err)
+			util.WriteError("Failed to take snapshot: %s", err)
 		} else {
 			newSnapshot = true
 		}
