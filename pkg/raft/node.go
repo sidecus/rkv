@@ -510,7 +510,7 @@ func (n *node) tryReplicateAndCommitNewEntry() bool {
 	}
 
 	// If we have majority matche the last entry, commit
-	if n.peerMgr.MajorityMatch(n.logMgr.LastIndex()) {
+	if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
 		n.commitTo(n.logMgr.LastIndex())
 		return n.logMgr.CommitIndex() == n.logMgr.LastIndex()
 	}
@@ -536,7 +536,7 @@ func (n *node) tryCommitUponHeartbeatReplies() {
 		}
 
 		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.peerMgr.MajorityMatch(i) {
+		if n.peerMgr.QuorumReached(i) {
 			commitIndex = i
 			break
 		}

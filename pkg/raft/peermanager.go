@@ -60,7 +60,7 @@ type Peer struct {
 type IFollowerStatusManager interface {
 	ResetFollowerIndicies(lastLogIndex int)
 	UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int)
-	MajorityMatch(logIndex int) bool
+	QuorumReached(logIndex int) bool
 }
 
 // IPeerManager defines raft peer manager interface.
@@ -140,8 +140,8 @@ func (mgr *PeerManager) UpdateFollowerMatchIndex(nodeID int, matched bool, lastM
 	}
 }
 
-// MajorityMatch tells whether we have majority of the followers match the given logIndex
-func (mgr *PeerManager) MajorityMatch(logIndex int) bool {
+// QuorumReached tells whether we have majority of the followers match the given logIndex
+func (mgr *PeerManager) QuorumReached(logIndex int) bool {
 	// both match count and majority should include the leader itself, which is not part of the peerManager
 	matchCnt := 1
 	majority := (len(mgr.Peers) + 1) / 2

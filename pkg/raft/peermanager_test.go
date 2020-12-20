@@ -126,18 +126,18 @@ func TestUpdateFollowerMatchIndex(t *testing.T) {
 	}
 }
 
-func TestMajorityMatch(t *testing.T) {
+func TestQuorumReached(t *testing.T) {
 	peerManager := createTestPeerManager(2).(*PeerManager)
 
 	peer0 := peerManager.GetPeer(0)
 	peer1 := peerManager.GetPeer(1)
 
-	if !peerManager.MajorityMatch(-1) {
-		t.Error("MajorityMatch fails on -1 when should be")
+	if !peerManager.QuorumReached(-1) {
+		t.Error("QuorumReached fails on -1 when should be")
 	}
 
-	if peerManager.MajorityMatch(0) {
-		t.Error("MajorityMatch returns true on 0 when it should not")
+	if peerManager.QuorumReached(0) {
+		t.Error("QuorumReached returns true on 0 when it should not")
 	}
 
 	peer0.matchIndex = 3
@@ -145,10 +145,10 @@ func TestMajorityMatch(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		expected := i <= 6
-		result := peerManager.MajorityMatch(i)
+		result := peerManager.QuorumReached(i)
 
 		if expected != result {
-			t.Errorf("MajorityMatch failed on index %d", i)
+			t.Errorf("QuorumReached failed on index %d", i)
 		}
 	}
 }

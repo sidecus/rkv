@@ -441,6 +441,6 @@ func (pm *mockPeerManager) ResetFollowerIndicies(lastLogIndex int) {
 func (pm *mockPeerManager) UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int) {
 
 }
-func (pm *mockPeerManager) MajorityMatch(logIndex int) bool {
+func (pm *mockPeerManager) QuorumReached(logIndex int) bool {
 	return false
 }
