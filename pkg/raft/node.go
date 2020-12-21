@@ -10,16 +10,22 @@ import (
 
 const maxAppendEntriesCount = 20
 
+// NodeInfo contains info for a peer node including id and endpoint
+type NodeInfo struct {
+	NodeID   int
+	Endpoint string
+}
+
 // NodeState is the state of the node
 type NodeState int
 
 const (
-	//Follower state
-	Follower = 1
-	// Candidate state
-	Candidate = 2
-	// Leader state
-	Leader = 3
+	//NodeStateFollower state
+	NodeStateFollower = 1
+	// NodeStateCandidate state
+	NodeStateCandidate = 2
+	// NodeStateLeader state
+	NodeStateLeader = 3
 )
 
 // INodeRPCProvider defines node functions used by RPC
@@ -66,8 +72,7 @@ type node struct {
 	votes         map[int]bool // resets when entering candidate state
 	logMgr        ILogManager
 	peerMgr       IPeerManager
-
-	// candidate only
+	replicator    IReplicator
 
 	// timer
 	timer IRaftTimer
@@ -91,13 +96,14 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		mu:            sync.RWMutex{},
 		clusterSize:   size,
 		nodeID:        nodeID,
-		nodeState:     Follower,
+		nodeState:     NodeStateFollower,
 		currentTerm:   0,
 		currentLeader: -1,
 		votedFor:      -1,
 		votes:         make(map[int]bool, size),
 		logMgr:        NewLogMgr(nodeID, sm),
 		peerMgr:       NewPeerManager(nodeID, peers, proxyFactory),
+		replicator:    NewReplicator(peers),
 	}
 
 	n.timer = NewRaftTimer(n.onTimer)
@@ -157,7 +163,7 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.Lock()
 
-	isLeader := n.nodeState == Leader
+	isLeader := n.nodeState == NodeStateLeader
 	leader := n.currentLeader
 	success := false
 
@@ -286,7 +292,7 @@ func (n *node) onTimer(state NodeState, term int) {
 	defer n.mu.Unlock()
 
 	if state == n.nodeState && term == n.currentTerm {
-		if n.nodeState == Leader {
+		if n.nodeState == NodeStateLeader {
 			n.sendHeartbeat()
 		} else {
 			n.startElection()
@@ -296,11 +302,11 @@ func (n *node) onTimer(state NodeState, term int) {
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
-	n.nodeState = Leader
+	n.nodeState = NodeStateLeader
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
+	n.replicator.ResetFollowerIndicies(n.logMgr.LastIndex())
 
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
@@ -308,7 +314,7 @@ func (n *node) enterLeaderState() {
 // enter follower state and follows new leader (or potential leader)
 func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	oldLeader := n.currentLeader
-	n.nodeState = Follower
+	n.nodeState = NodeStateFollower
 	n.currentLeader = sourceNodeID
 	n.setTerm(newTerm)
 
@@ -319,7 +325,7 @@ func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 
 // enter candidate state
 func (n *node) enterCandidateState() {
-	n.nodeState = Candidate
+	n.nodeState = NodeStateCandidate
 	n.currentLeader = -1
 	n.setTerm(n.currentTerm + 1)
 
@@ -384,7 +390,7 @@ func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
 		return // there is a higher term, no need to continue
 	}
 
-	if reply.VotedTerm != n.currentTerm || n.nodeState != Candidate || !reply.VoteGranted {
+	if reply.VotedTerm != n.currentTerm || n.nodeState != NodeStateCandidate || !reply.VoteGranted {
 		// stale vote or denied, ignore
 		util.WriteTrace("T%d: Stale or ungranted vote received from Node%d, term:%d, voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
 		return
@@ -401,7 +407,7 @@ func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
 
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
-	for _, follower := range n.peerMgr.GetAllPeers() {
+	for _, follower := range n.replicator.GetAllFollowers() {
 		n.replicateData(follower, true, n.onHeartbeatReply)
 	}
 
@@ -427,7 +433,7 @@ func (n *node) onHeartbeatReply(reply *AppendEntriesReply) {
 	// Different from the paper, we don't wait for AE call to finish
 	// so there is a chance that we are no longer the leader
 	// In that case no need to continue
-	if n.nodeState != Leader || n.currentTerm != reply.Term {
+	if n.nodeState != NodeStateLeader || n.currentTerm != reply.Term {
 		return
 	}
 
@@ -437,13 +443,13 @@ func (n *node) onHeartbeatReply(reply *AppendEntriesReply) {
 	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
 	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
 	// Here we added a LastMatch field on AppendEntries reply. And it's used instead
-	n.peerMgr.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
+	n.replicator.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
 
 	// Check whether there are logs to commit
 	n.tryCommitUponHeartbeatReplies()
 
 	// replicate more if needed
-	follower := n.peerMgr.GetPeer(followerID)
+	follower := n.replicator.GetFollower(followerID)
 	if follower.nextIndex <= n.logMgr.LastIndex() {
 		// only replicate more if we haven't caught up
 		n.replicateData(follower, false, n.onHeartbeatReply)
@@ -451,7 +457,7 @@ func (n *node) onHeartbeatReply(reply *AppendEntriesReply) {
 }
 
 // replicate logs if possible (lastIndex > nextIndex > snapshotIndex && matchIndex == nextIndex + 1), otherwise send empty heartbeat
-func (n *node) replicateLogs(follower *Peer, onReply func(*AppendEntriesReply)) {
+func (n *node) replicateLogs(follower *Follower, onReply func(*AppendEntriesReply)) {
 	// Send logs
 	maxEntryCount := maxAppendEntriesCount
 	if follower.matchIndex != follower.nextIndex-1 {
@@ -465,7 +471,7 @@ func (n *node) replicateLogs(follower *Peer, onReply func(*AppendEntriesReply)) 
 
 // replicateData replicates data to follower. It takes care of snapshot scenarios, and sends empty payload if follower is catching up.
 // can be used for heartbeat (if there is a snapshot pending we send snapshot instead in the heartbeat)
-func (n *node) replicateData(follower *Peer, skipSnapshot bool, onReply func(*AppendEntriesReply)) {
+func (n *node) replicateData(follower *Follower, skipSnapshot bool, onReply func(*AppendEntriesReply)) {
 	if !skipSnapshot && follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot if nextIndex is too small and we do want to send snapshot
 		req := n.createSnapshotRequest()
@@ -488,7 +494,7 @@ func (n *node) tryReplicateAndCommitNewEntry() bool {
 	// We do this on different goroutines and wait for them to finish
 	// This is called right after new log append, so there gauranteed that there is data to replicate for all nodes
 	wg.Add(peerCnt)
-	for _, follower := range n.peerMgr.GetAllPeers() {
+	for _, follower := range n.replicator.GetAllFollowers() {
 		go n.replicateData(follower, true, func(reply *AppendEntriesReply) {
 			if reply != nil {
 				util.WriteVerbose("T%d: Execution triggered replication: Node%d received AE reply from Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, n.nodeID, follower.NodeID, reply.Success, reply.LastMatch)
@@ -505,17 +511,17 @@ func (n *node) tryReplicateAndCommitNewEntry() bool {
 	// Update follower indicies from all replies
 	for reply := range replies {
 		if reply != nil {
-			n.peerMgr.UpdateFollowerMatchIndex(reply.NodeID, reply.Success, reply.LastMatch)
+			n.replicator.UpdateFollowerMatchIndex(reply.NodeID, reply.Success, reply.LastMatch)
 		}
 	}
 
 	// If we have majority matche the last entry, commit
-	if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
+	if n.replicator.QuorumReached(n.logMgr.LastIndex()) {
 		n.commitTo(n.logMgr.LastIndex())
 		return n.logMgr.CommitIndex() == n.logMgr.LastIndex()
 	}
 
-	util.WriteWarning("T%d: Node%d (leader) could not get consensus on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
+	util.WriteWarning("T%d: Node%d (leader) could not get quorum on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
 	return false
 }
 
@@ -536,7 +542,7 @@ func (n *node) tryCommitUponHeartbeatReplies() {
 		}
 
 		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.peerMgr.QuorumReached(i) {
+		if n.replicator.QuorumReached(i) {
 			commitIndex = i
 			break
 		}

@@ -6,22 +6,8 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const nextIndexFallbackStep = 5
-
-// followerStatus manages nextIndex and matchIndex for a follower
-type followerStatus struct {
-	nextIndex  int
-	matchIndex int
-}
-
-// NodeInfo contains info for a peer node including id and endpoint
-type NodeInfo struct {
-	NodeID   int
-	Endpoint string
-}
-
 // IPeerProxy defines the RPC client interface for a specific peer nodes
-// It's an abstraction layer so that concrete implementation (RPC or REST) is detached
+// It's an abstraction layer so that concrete implementation (RPC or REST) can be decoupled from this package
 type IPeerProxy interface {
 	// AppendEntries calls a peer node to append entries.
 	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
@@ -51,16 +37,7 @@ type IPeerProxyFactory interface {
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
 	NodeInfo
-	followerStatus
 	proxy IPeerProxy
-}
-
-// IFollowerStatusManager defines interfaces to manage follower status
-// Used by leader only
-type IFollowerStatusManager interface {
-	ResetFollowerIndicies(lastLogIndex int)
-	UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int)
-	QuorumReached(logIndex int) bool
 }
 
 // IPeerManager defines raft peer manager interface.
@@ -75,9 +52,6 @@ type IPeerManager interface {
 
 	GetAllPeers() map[int]*Peer
 	GetPeer(nodeID int) *Peer
-
-	// PeerManager also manages follower status
-	IFollowerStatusManager
 }
 
 // PeerManager manages communication with peers
@@ -105,56 +79,11 @@ func NewPeerManager(nodeID int, peers map[int]NodeInfo, factory IPeerProxyFactor
 	for _, info := range peers {
 		mgr.Peers[info.NodeID] = &Peer{
 			NodeInfo: info,
-			followerStatus: followerStatus{
-				nextIndex:  0,
-				matchIndex: -1,
-			},
-			proxy: factory.NewPeerProxy(info),
+			proxy:    factory.NewPeerProxy(info),
 		}
 	}
 
 	return mgr
-}
-
-// ResetFollowerIndicies resets all follower's indices based on lastLogIndex
-func (mgr *PeerManager) ResetFollowerIndicies(lastLogIndex int) {
-	for _, p := range mgr.Peers {
-		p.nextIndex = lastLogIndex + 1
-		p.matchIndex = -1
-	}
-}
-
-// UpdateFollowerMatchIndex updates match index for a given node
-func (mgr *PeerManager) UpdateFollowerMatchIndex(nodeID int, matched bool, lastMatch int) {
-	peer := mgr.GetPeer(nodeID)
-
-	if matched {
-		util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", nodeID, lastMatch)
-		peer.nextIndex = lastMatch + 1
-		peer.matchIndex = lastMatch
-	} else {
-		util.WriteVerbose("Decreasing Node%d's nextIndex.", nodeID)
-		// prev entries don't match. decrement nextIndex.
-		// cap it to 0. It is meaningless when less than zero
-		peer.nextIndex = util.Max(0, peer.nextIndex-nextIndexFallbackStep)
-	}
-}
-
-// QuorumReached tells whether we have majority of the followers match the given logIndex
-func (mgr *PeerManager) QuorumReached(logIndex int) bool {
-	// both match count and majority should include the leader itself, which is not part of the peerManager
-	matchCnt := 1
-	majority := (len(mgr.Peers) + 1) / 2
-	for _, p := range mgr.Peers {
-		if p.matchIndex >= logIndex {
-			matchCnt++
-			if matchCnt > majority {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // AppendEntries sends AE request to a single node

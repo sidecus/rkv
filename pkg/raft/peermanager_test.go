@@ -2,8 +2,6 @@ package raft
 
 import (
 	"testing"
-
-	"github.com/sidecus/raft/pkg/util"
 )
 
 // PeerProxy mock
@@ -56,99 +54,8 @@ func TestNewPeerManager(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		p := peerManager.GetPeer(i)
-		if p.nextIndex != 0 || p.matchIndex != -1 {
-			t.Error("follower indicies are not initialized correctly")
-		}
-
 		if p.NodeID != i {
 			t.Error("peer node id is not initialized correctly")
-		}
-	}
-}
-
-func TestResetFollowerIndicies(t *testing.T) {
-	peerManager := createTestPeerManager(3).(*PeerManager)
-	peerManager.Peers[0].nextIndex = 5
-	peerManager.Peers[0].matchIndex = 3
-	peerManager.Peers[1].nextIndex = 10
-	peerManager.Peers[1].matchIndex = 9
-	peerManager.Peers[2].nextIndex = 6
-	peerManager.Peers[2].matchIndex = -1
-
-	peerManager.ResetFollowerIndicies(20)
-	for _, p := range peerManager.Peers {
-		if p.nextIndex != 21 || p.matchIndex != -1 {
-			t.Fatal("reset doesn't reset on positive last index")
-		}
-	}
-
-	peerManager.ResetFollowerIndicies(-1)
-	for _, p := range peerManager.Peers {
-		if p.nextIndex != 0 || p.matchIndex != -1 {
-			t.Fatal("reset doesn't reset on -1 as last index")
-		}
-	}
-}
-
-func TestUpdateFollowerMatchIndex(t *testing.T) {
-	peerManager := createTestPeerManager(3).(*PeerManager)
-
-	peer0 := peerManager.GetPeer(0)
-
-	// has new match
-	peerManager.Peers[0].nextIndex = 5
-	peerManager.Peers[0].matchIndex = 3
-	peerManager.UpdateFollowerMatchIndex(0, true, -1)
-	if peer0.nextIndex != 0 || peer0.matchIndex != -1 {
-		t.Error("updateMatchIndex fails with successful match on -1")
-	}
-
-	peerManager.Peers[0].nextIndex = 5
-	peerManager.Peers[0].matchIndex = 3
-	peerManager.UpdateFollowerMatchIndex(0, true, 6)
-	if peer0.nextIndex != 7 || peer0.matchIndex != 6 {
-		t.Error("updateMatchIndex fails with successful match on 6")
-	}
-
-	// no match
-	peerManager.Peers[0].nextIndex = 8
-	peerManager.Peers[0].matchIndex = 3
-	peerManager.UpdateFollowerMatchIndex(0, false, -2)
-	if peer0.nextIndex != util.Max(0, 8-nextIndexFallbackStep) || peer0.matchIndex != 3 {
-		t.Error("updateMatchIndex doesn't decrease nextIndex correctly upon failed match")
-	}
-
-	peerManager.Peers[0].nextIndex = 0
-	peerManager.Peers[0].matchIndex = -1
-	peerManager.UpdateFollowerMatchIndex(0, false, -2)
-	if peer0.nextIndex != 0 || peer0.matchIndex != -1 {
-		t.Error("updateMatchIndex unnecessarily decrease nextIndex when it's already 0 upon failure")
-	}
-}
-
-func TestQuorumReached(t *testing.T) {
-	peerManager := createTestPeerManager(2).(*PeerManager)
-
-	peer0 := peerManager.GetPeer(0)
-	peer1 := peerManager.GetPeer(1)
-
-	if !peerManager.QuorumReached(-1) {
-		t.Error("QuorumReached fails on -1 when should be")
-	}
-
-	if peerManager.QuorumReached(0) {
-		t.Error("QuorumReached returns true on 0 when it should not")
-	}
-
-	peer0.matchIndex = 3
-	peer1.matchIndex = 6
-
-	for i := 0; i < 10; i++ {
-		expected := i <= 6
-		result := peerManager.QuorumReached(i)
-
-		if expected != result {
-			t.Errorf("QuorumReached failed on index %d", i)
 		}
 	}
 }
