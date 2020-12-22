@@ -72,8 +72,8 @@ func TestUpdateFollowerMatchIndex(t *testing.T) {
 	follower0.nextIndex = 8
 	follower0.matchIndex = 3
 	replicator.UpdateFollowerMatchIndex(0, false, -2)
-	if follower0.nextIndex != util.Max(0, 8-nextIndexFallbackStep) || follower0.matchIndex != 3 {
-		t.Error("updateMatchIndex doesn't decrease nextIndex correctly upon failed match")
+	if follower0.nextIndex != util.Max(0, 8-nextIndexFallbackStep) || follower0.matchIndex != -1 {
+		t.Error("updateMatchIndex doesn't decrease nextIndex correctly or set match index to -1 upon failed match")
 	}
 
 	follower0.nextIndex = 0
@@ -113,5 +113,5 @@ func TestQuorumReached(t *testing.T) {
 
 func createTestReplicator(size int) IReplicator {
 	peers := createTestPeerInfo(size)
-	return NewReplicator(peers)
+	return NewReplicator(peers, func(int) {})
 }

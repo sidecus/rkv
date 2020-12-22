@@ -440,15 +440,7 @@ func TestGetLogEntries(t *testing.T) {
 	}
 
 	// no elements
-	entries, prevIndex, prevTerm := lm.GetLogEntries(0, 1)
-	if len(entries) != 0 {
-		t.Error("Retrieving from empty logs should return empty")
-	}
-	if prevIndex != -1 || prevTerm != -1 {
-		t.Error("GetLogEntries returns incorrect prev index and term when logs is empty")
-	}
-
-	entries, prevIndex, prevTerm = lm.GetLogEntries(0, 0)
+	entries, prevIndex, prevTerm := lm.GetLogEntries(0, 0)
 	if len(entries) != 0 {
 		t.Error("Retrieving from empty logs should return empty")
 	}
@@ -465,22 +457,6 @@ func TestGetLogEntries(t *testing.T) {
 	}
 	if prevIndex != -1 || prevTerm != -1 {
 		t.Error("GetLogEntries returns incorrect prev index and term when retrieving the first element")
-	}
-
-	entries, prevIndex, prevTerm = lm.GetLogEntries(0, 100)
-	if len(entries) != 1 {
-		t.Error("should return 1 element")
-	}
-	if prevIndex != -1 || prevTerm != -1 {
-		t.Error("GetLogEntries returns incorrect prev index and term when retrieving the first element")
-	}
-
-	entries, prevIndex, prevTerm = lm.GetLogEntries(1, 100)
-	if len(entries) != 0 {
-		t.Error("should return empty slice when next is at the end")
-	}
-	if prevIndex != 0 || prevTerm != 10 {
-		t.Error("GetLogEntries returns incorrect prev index and term when nextIndex is lastIndex+1")
 	}
 
 	entries, prevIndex, prevTerm = lm.GetLogEntries(1, 1)
