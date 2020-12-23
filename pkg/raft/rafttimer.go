@@ -71,7 +71,7 @@ func (rt *raftTimer) Stop() {
 
 // timer event loop
 func (rt *raftTimer) eventLoop() {
-	state := NodeState(Follower)
+	state := NodeState(NodeStateFollower)
 	term := -1
 	stop := false
 	for !stop {
@@ -82,7 +82,7 @@ func (rt *raftTimer) eventLoop() {
 
 			// reset timer and drain events
 			var timeout time.Duration
-			if state == Leader {
+			if state == NodeStateLeader {
 				timeout = heartbeatTimeout
 			} else {
 				timeout = rt.getElectionTimeout()

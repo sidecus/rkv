@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 2000
+const snapshotEntriesCount = 3000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -22,7 +22,7 @@ type ILogManager interface {
 	SnapshotTerm() int
 	SnapshotFile() string
 	GetLogEntry(index int) LogEntry
-	GetLogEntries(start int, count int) (entries []LogEntry, prevIndex int, prevTerm int)
+	GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int)
 
 	ProcessCmd(cmd StateMachineCmd, term int)
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
@@ -114,8 +114,7 @@ func (lm *LogManager) GetLogEntry(index int) LogEntry {
 }
 
 // GetLogEntries returns entries between [start, end).
-// Same behavior as normal slicing but with index shiftted according to snapshotIndex.
-// Additonaly, it adds end boundary protection if it's out of range
+// Same behavior as normal slicing but with index shiftted as appropriate with snapshot/empty scenarios in mind
 // It also returns the prevIndex/prevTerm
 func (lm *LogManager) GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int) {
 	if start <= lm.snapshotIndex {
@@ -123,7 +122,11 @@ func (lm *LogManager) GetLogEntries(start int, end int) (entries []LogEntry, pre
 	}
 
 	if end < start {
-		util.Panicf("end should be greater than or equal to start")
+		util.Panicln("end should be greater than or equal to start")
+	}
+
+	if end > lm.lastIndex+1 {
+		util.Panicln("end should not be greater than lastIndex+1")
 	}
 
 	prevIndex = start - 1

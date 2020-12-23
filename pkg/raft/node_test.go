@@ -14,7 +14,7 @@ func TestNewNode(t *testing.T) {
 	peerCount := 2
 	nodeID := peerCount // last node
 	peers := createTestPeerInfo(peerCount)
-	n := NewNode(nodeID, peers, &testStateMachine{}, &PeerFactoryMock{}).(*node)
+	n := NewNode(nodeID, peers, &testStateMachine{}, &MockPeerFactory{}).(*node)
 
 	if n.nodeID != nodeID {
 		t.Error("Node created with invalid node ID")
@@ -24,7 +24,7 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid clustersize")
 	}
 
-	if n.nodeState != Follower {
+	if n.nodeState != NodeStateFollower {
 		t.Error("Node created with invalid starting state")
 	}
 
@@ -40,7 +40,7 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votedFor")
 	}
 
-	if len(n.peerMgr.GetAllPeers()) != peerCount {
+	if len(n.peerMgr.GetPeers()) != peerCount {
 		t.Error("Node created with invalid number of followers")
 	}
 
@@ -73,7 +73,7 @@ func TestNodeSetTerm(t *testing.T) {
 
 func TestEnterFollowerState(t *testing.T) {
 	n := &node{
-		nodeState:     Leader,
+		nodeState:     NodeStateLeader,
 		currentTerm:   0,
 		currentLeader: 0,
 		votedFor:      0,
@@ -81,7 +81,7 @@ func TestEnterFollowerState(t *testing.T) {
 
 	n.enterFollowerState(1, 1)
 
-	if n.nodeState != Follower {
+	if n.nodeState != NodeStateFollower {
 		t.Error("enterFollowerState didn't update nodeState to Follower")
 	}
 	if n.currentLeader != 1 {
@@ -98,7 +98,7 @@ func TestEnterFollowerState(t *testing.T) {
 func TestEnterCandidateState(t *testing.T) {
 	n := &node{
 		nodeID:        100,
-		nodeState:     Leader,
+		nodeState:     NodeStateLeader,
 		currentTerm:   0,
 		currentLeader: 0,
 		votedFor:      0,
@@ -106,7 +106,7 @@ func TestEnterCandidateState(t *testing.T) {
 
 	n.enterCandidateState()
 
-	if n.nodeState != Candidate {
+	if n.nodeState != NodeStateCandidate {
 		t.Error("enterCandidateState didn't update nodeState to Candidate")
 	}
 	if n.currentLeader != -1 {
@@ -126,7 +126,7 @@ func TestEnterCandidateState(t *testing.T) {
 func TestEnterLeaderState(t *testing.T) {
 	n := &node{
 		nodeID:        100,
-		nodeState:     Candidate,
+		nodeState:     NodeStateCandidate,
 		currentTerm:   50,
 		currentLeader: -1,
 		peerMgr:       createTestPeerManager(2),
@@ -135,16 +135,16 @@ func TestEnterLeaderState(t *testing.T) {
 		},
 	}
 
-	peer0 := n.peerMgr.GetPeer(0)
-	peer0.nextIndex = 30
-	peer0.matchIndex = 20
-	peer1 := n.peerMgr.GetPeer(1)
-	peer1.nextIndex = 100
-	peer1.matchIndex = 70
+	follower0 := n.peerMgr.GetPeer(0)
+	follower0.nextIndex = 30
+	follower0.matchIndex = 20
+	follower1 := n.peerMgr.GetPeer(1)
+	follower1.nextIndex = 100
+	follower1.matchIndex = 70
 
 	n.enterLeaderState()
 
-	if n.nodeState != Leader {
+	if n.nodeState != NodeStateLeader {
 		t.Error("enterLeaderState didn't update nodeState to Leader")
 	}
 	if n.currentLeader != 100 {
@@ -153,10 +153,10 @@ func TestEnterLeaderState(t *testing.T) {
 	if n.currentTerm != 50 {
 		t.Error("enterLeaderState changes term by mistake")
 	}
-	if peer0.nextIndex != 4 || peer1.nextIndex != 4 {
+	if follower0.nextIndex != 4 || follower1.nextIndex != 4 {
 		t.Error("enterLeaderState didn't reset nextIndex for peers")
 	}
-	if peer0.matchIndex != -1 || peer1.matchIndex != -1 {
+	if follower0.matchIndex != -1 || follower1.matchIndex != -1 {
 		t.Error("enterLeaderState didn't reset matchIndex for peers")
 	}
 }
@@ -164,7 +164,7 @@ func TestEnterLeaderState(t *testing.T) {
 func TestTryFollowNewTerm(t *testing.T) {
 	n := &node{
 		nodeID:        0,
-		nodeState:     Leader,
+		nodeState:     NodeStateLeader,
 		currentTerm:   0,
 		currentLeader: 0,
 		votedFor:      0,
@@ -177,30 +177,30 @@ func TestTryFollowNewTerm(t *testing.T) {
 	if !n.tryFollowNewTerm(1, 1, false) {
 		t.Error("tryFollowNewTerm should return true on new term")
 	}
-	if n.currentLeader != 1 || n.currentTerm != 1 || n.nodeState != Follower {
+	if n.currentLeader != 1 || n.currentTerm != 1 || n.nodeState != NodeStateFollower {
 		t.Error("tryFollowNewTerm doesn't follow upon new term")
 	}
 
-	n.nodeState = Candidate
+	n.nodeState = NodeStateCandidate
 	n.currentLeader = 0
 	n.currentTerm = 1
 	if !n.tryFollowNewTerm(2, 1, true) {
 		t.Error("tryFollowNewTerm should return true on AE calls from the same term")
 	}
-	if n.currentLeader != 2 || n.currentTerm != 1 || n.nodeState != Follower {
+	if n.currentLeader != 2 || n.currentTerm != 1 || n.nodeState != NodeStateFollower {
 		t.Error("tryFollowNewTerm should follow AE calls from the same term")
 	}
-	if timer.state != Follower {
+	if timer.state != NodeStateFollower {
 		t.Error("tryFollowNewTerm didn't reset timer to follower mode")
 	}
 
-	n.nodeState = Candidate
+	n.nodeState = NodeStateCandidate
 	n.currentLeader = 0
 	n.currentTerm = 1
 	if n.tryFollowNewTerm(1, 1, false) {
 		t.Error("tryFollowNewTerm should not return true on same term when it's not AE call")
 	}
-	if n.currentLeader != 0 || n.currentTerm != 1 || n.nodeState != Candidate {
+	if n.currentLeader != 0 || n.currentTerm != 1 || n.nodeState != NodeStateCandidate {
 		t.Error("tryFollowNewTerm updates node state incorrectly")
 	}
 }
@@ -232,7 +232,7 @@ func TestLeaderCommit(t *testing.T) {
 	}
 
 	// We only have a match on 1st entry, but it's of a lower term
-	n.tryCommitUponHeartbeatReplies()
+	n.leaderCommit()
 	if logMgr.commitIndex != -1 {
 		t.Error("leaderCommit shall not commit entries from previous term")
 	}
@@ -242,7 +242,7 @@ func TestLeaderCommit(t *testing.T) {
 
 	// We only have a majority match on 2nd entry in the same term
 	peerMgr.GetPeer(1).matchIndex = 2
-	n.tryCommitUponHeartbeatReplies()
+	n.leaderCommit()
 	if logMgr.commitIndex != 2 {
 		t.Error("leaderCommit shall commit to the right entry")
 	}
@@ -252,9 +252,7 @@ func TestLeaderCommit(t *testing.T) {
 }
 
 func TestReplicateData(t *testing.T) {
-	logMgr := NewLogMgr(100, &testStateMachine{
-		lastApplied: -111,
-	}).(*LogManager)
+	logMgr := NewLogMgr(100, &testStateMachine{lastApplied: -111}).(*LogManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,
@@ -262,95 +260,84 @@ func TestReplicateData(t *testing.T) {
 		}, i+1)
 	}
 
-	peerMgr := &mockPeerManager{}
+	peers := make(map[int]NodeInfo, 1)
+	peers[0] = NodeInfo{NodeID: 1}
+	peerMgr := NewPeerManager(2, peers, nil, &MockPeerFactory{})
+	peer1 := peerMgr.GetPeer(1)
+	proxy1 := peer1.IPeerProxy.(*MockPeerProxy)
 
 	n := &node{
 		nodeID:      2,
+		nodeState:   NodeStateLeader,
 		clusterSize: 3,
 		currentTerm: 3,
 		logMgr:      logMgr,
 		peerMgr:     peerMgr,
 	}
 
-	onAEReply := func(*AppendEntriesReply) {}
-
 	// nextIndex is larger than lastIndex, should send empty request
-	peerMgr.reset()
-	peer1 := peerMgr.GetPeer(1)
 	peer1.nextIndex = logMgr.lastIndex + 1
 	peer1.matchIndex = 1
-	n.replicateData(peer1, true, onAEReply)
-	if peerMgr.aeReq == nil {
+	n.replicateData(1)
+	if proxy1.aeReq == nil {
 		t.Error("replicateData should replicate even when nextIndex is higher than lastIndex")
 	}
-	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
-		peerMgr.aeReq.PrevLogIndex != peer1.nextIndex-1 || peerMgr.aeReq.PrevLogTerm != logMgr.logs[peerMgr.aeReq.PrevLogIndex].Term {
+	aeReq := proxy1.aeReq
+	if aeReq.LeaderID != n.nodeID || aeReq.Term != n.currentTerm ||
+		aeReq.PrevLogIndex != peer1.nextIndex-1 || aeReq.PrevLogTerm != logMgr.logs[aeReq.PrevLogIndex].Term {
 		t.Error("wrong info are being replicated")
 	}
-	if len(peerMgr.aeReq.Entries) != 0 {
+	if len(aeReq.Entries) != 0 {
 		t.Error("wrong payload when nextIndex is higher than lastIndex")
 	}
 
 	// nextIndex is smaler than lastIndex
-	peerMgr.reset()
 	peer1.nextIndex = logMgr.lastIndex - 2
 	peer1.matchIndex = 1
-	n.replicateData(peer1, true, onAEReply)
-	if peerMgr.aeReq == nil {
+	n.replicateData(1)
+	if proxy1.aeReq == nil {
 		t.Error("replicateLogsTo should replicate when nextIndex smaller")
 	}
-	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
-		peerMgr.aeReq.PrevLogIndex != peer1.nextIndex-1 || peerMgr.aeReq.PrevLogTerm != logMgr.logs[peerMgr.aeReq.PrevLogIndex].Term {
+	aeReq = proxy1.aeReq
+	if aeReq.LeaderID != n.nodeID || aeReq.Term != n.currentTerm ||
+		aeReq.PrevLogIndex != logMgr.lastIndex-3 || aeReq.PrevLogTerm != logMgr.logs[aeReq.PrevLogIndex].Term {
 		t.Error("wrong info are being replicated")
 	}
-	if len(peerMgr.aeReq.Entries) != 3 || peerMgr.aeReq.Entries[0].Index != logMgr.logs[logMgr.lastIndex-2].Index {
+	if len(aeReq.Entries) != 3 || aeReq.Entries[0].Index != logMgr.logs[logMgr.lastIndex-2].Index {
 		t.Error("replicated entries contain bad entries")
 	}
 
-	// nextIndex is the same as snapshotIndex, none heartbeat should trigger snapshot request
-	peerMgr.reset()
+	// nextIndex is the same as snapshotIndex, should trigger snapshot request
 	logMgr.snapshotIndex = 3
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshot"
 	peer1.nextIndex = 3
-	n.replicateData(peer1, false, onAEReply)
-	if peerMgr.isReq == nil {
+	n.replicateData(1)
+	if proxy1.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't (or replicated more than once)")
 	}
-	if peerMgr.isReq.LeaderID != n.nodeID || peerMgr.isReq.Term != n.currentTerm ||
-		peerMgr.isReq.File != logMgr.lastSnapshotFile ||
-		peerMgr.isReq.SnapshotIndex != logMgr.snapshotIndex || peerMgr.isReq.SnapshotTerm != logMgr.snapshotTerm {
+	isReq := proxy1.isReq
+	if isReq.LeaderID != n.nodeID || isReq.Term != n.currentTerm ||
+		isReq.File != logMgr.lastSnapshotFile ||
+		isReq.SnapshotIndex != logMgr.snapshotIndex || isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
-	}
-	// heartbeat should not trigger snapshot
-	peerMgr.reset()
-	n.replicateData(peer1, true, onAEReply)
-	if peerMgr.isReq != nil || peerMgr.aeReq == nil {
-		t.Error("replicateData should not replicate snapshot upon heartbeat")
-	}
-	if peerMgr.aeReq.LeaderID != n.nodeID || peerMgr.aeReq.Term != n.currentTerm ||
-		peerMgr.aeReq.PrevLogIndex != logMgr.snapshotIndex || peerMgr.aeReq.PrevLogTerm != logMgr.snapshotTerm {
-		t.Error("wrong info are being replicated")
-	}
-	if len(peerMgr.aeReq.Entries) != 0 {
-		t.Error("wrong payload when nextIndex is higher than lastIndex")
 	}
 
 	// nextIndex is smaller than snapshotIndex
-	peerMgr.reset()
 	logMgr.snapshotIndex = 5
 	logMgr.snapshotTerm = 3
 	logMgr.lastSnapshotFile = "snapshotsmaller"
+	logMgr.lastIndex = logMgr.snapshotIndex + len(logMgr.logs)
 	peer1.nextIndex = 4
-	n.replicateData(peer1, false, n.onHeartbeatReply)
-	if peerMgr.isReq == nil {
+	n.replicateData(1)
+	if proxy1.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}
-	if peerMgr.isReq.LeaderID != n.nodeID || peerMgr.isReq.Term != n.currentTerm || peerMgr.isReq.File != logMgr.lastSnapshotFile || peerMgr.isReq.SnapshotIndex != logMgr.snapshotIndex || peerMgr.isReq.SnapshotTerm != logMgr.snapshotTerm {
+	isReq = proxy1.isReq
+	if isReq.LeaderID != n.nodeID || isReq.Term != n.currentTerm || isReq.File != logMgr.lastSnapshotFile || isReq.SnapshotIndex != logMgr.snapshotIndex || isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
 }
-
 func TestWonElection(t *testing.T) {
 	n := &node{}
 	n.clusterSize = 3
@@ -366,81 +353,4 @@ func TestWonElection(t *testing.T) {
 		t.Error("wonElection should return true on 2 votes out of 3")
 	}
 
-}
-
-type mockPeerManager struct {
-	nodeID  int
-	aeReq   *AppendEntriesRequest
-	rvReq   *RequestVoteRequest
-	isReq   *SnapshotRequest
-	getReq  *GetRequest
-	execReq *StateMachineCmd
-	peer    *Peer
-}
-
-func (pm *mockPeerManager) reset() {
-	pm.nodeID = 0
-	pm.aeReq = nil
-	pm.rvReq = nil
-	pm.isReq = nil
-	pm.getReq = nil
-	pm.execReq = nil
-}
-
-func (pm *mockPeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply)) {
-	pm.nodeID = nodeID
-	pm.aeReq = req
-}
-func (pm *mockPeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
-	pm.nodeID = nodeID
-	pm.rvReq = req
-}
-func (pm *mockPeerManager) BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
-	pm.nodeID = -1 //means all
-	pm.rvReq = req
-}
-
-func (pm *mockPeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply)) {
-	pm.nodeID = nodeID
-	pm.isReq = req
-}
-
-func (pm *mockPeerManager) Get(nodeID int, req *GetRequest) (*GetReply, error) {
-	pm.nodeID = nodeID
-	pm.getReq = req
-
-	return nil, nil
-}
-
-func (pm *mockPeerManager) Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error) {
-	pm.nodeID = nodeID
-	pm.execReq = cmd
-	return nil, nil
-}
-
-func (pm *mockPeerManager) GetAllPeers() map[int]*Peer {
-	return nil
-}
-
-func (pm *mockPeerManager) GetPeer(nodeID int) *Peer {
-	if pm.peer == nil {
-		pm.peer = &Peer{
-			NodeInfo: NodeInfo{
-				NodeID: nodeID,
-			},
-		}
-	}
-
-	return pm.peer
-}
-
-func (pm *mockPeerManager) ResetFollowerIndicies(lastLogIndex int) {
-
-}
-
-func (pm *mockPeerManager) UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int) {
-
-}
-func (pm *mockPeerManager) MajorityMatch(logIndex int) bool {
-	return false
 }

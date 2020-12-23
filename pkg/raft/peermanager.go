@@ -2,26 +2,18 @@ package raft
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const nextIndexFallbackStep = 5
+const nextIndexFallbackStep = 20
 
-// followerStatus manages nextIndex and matchIndex for a follower
-type followerStatus struct {
-	nextIndex  int
-	matchIndex int
-}
-
-// NodeInfo contains info for a peer node including id and endpoint
-type NodeInfo struct {
-	NodeID   int
-	Endpoint string
-}
+var errorNoPeersProvided = errors.New("No raft peers provided")
+var errorInvalidNodeID = errors.New("Invalid node id")
 
 // IPeerProxy defines the RPC client interface for a specific peer nodes
-// It's an abstraction layer so that concrete implementation (RPC or REST) is detached
+// It's an abstraction layer so that concrete implementation (RPC or REST) can be decoupled from this package
 type IPeerProxy interface {
 	// AppendEntries calls a peer node to append entries.
 	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
@@ -51,45 +43,71 @@ type IPeerProxyFactory interface {
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
 	NodeInfo
-	followerStatus
-	proxy IPeerProxy
+	nextIndex      int
+	matchIndex     int
+	ReplicationSig chan interface{}
+
+	IPeerProxy
 }
 
-// IFollowerStatusManager defines interfaces to manage follower status
-// Used by leader only
-type IFollowerStatusManager interface {
-	ResetFollowerIndicies(lastLogIndex int)
-	UpdateFollowerMatchIndex(nodeID int, match bool, lastMatch int)
-	MajorityMatch(logIndex int) bool
+// HasMatch tells us whether we have found a matching entry for the given follower
+func (p *Peer) HasMatch() bool {
+	return p.matchIndex+1 == p.nextIndex
+}
+
+// HasMoreToReplicate tells us whether there are more to replicate for this follower
+func (p *Peer) HasMoreToReplicate(lastIndex int) bool {
+	return p.matchIndex < lastIndex
+}
+
+// UpdateMatchIndex updates match index for a given node
+func (p *Peer) UpdateMatchIndex(match bool, lastMatch int) {
+	if match {
+		if p.matchIndex != lastMatch {
+			util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", p.NodeID, lastMatch)
+			p.nextIndex = lastMatch + 1
+			p.matchIndex = lastMatch
+		}
+	} else {
+		util.WriteVerbose("Decreasing Node%d's nextIndex. lastMatch %d", p.NodeID, lastMatch)
+		// prev entries don't match. decrement nextIndex.
+		// cap it to 0. It is meaningless when less than zero
+		p.nextIndex = util.Max(0, p.nextIndex-nextIndexFallbackStep)
+		p.matchIndex = -1
+	}
+}
+
+// TriggerReplication triggers replication for current node
+func (p *Peer) TriggerReplication() {
+	p.ReplicationSig <- struct{}{}
 }
 
 // IPeerManager defines raft peer manager interface.
-// A peer manager tracks peers' status as well as communicate with them
 type IPeerManager interface {
-	AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply))
-	RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply))
-	BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply))
-	InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply))
-	Get(nodeID int, req *GetRequest) (*GetReply, error)
-	Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error)
-
-	GetAllPeers() map[int]*Peer
+	GetPeers() map[int]*Peer
 	GetPeer(nodeID int) *Peer
+	RunAndWaitAllPeers(action func(*Peer) interface{}) chan interface{}
 
-	// PeerManager also manages follower status
-	IFollowerStatusManager
+	ResetFollowerIndicies(lastLogIndex int)
+	QuorumReached(logIndex int) bool
+
+	Start()
+	Stop()
 }
+
+// ReplicateFunc function type used to replicate data
+type ReplicateFunc func(followerID int)
 
 // PeerManager manages communication with peers
 type PeerManager struct {
-	Peers map[int]*Peer
+	Peers     map[int]*Peer
+	ChStop    chan interface{}
+	Replicate ReplicateFunc
+	wg        sync.WaitGroup
 }
 
-var errorNoPeersProvided = errors.New("No raft peers provided")
-var errorInvalidNodeID = errors.New("Invalid node id")
-
 // NewPeerManager creates the node proxy for kv store
-func NewPeerManager(nodeID int, peers map[int]NodeInfo, factory IPeerProxyFactory) IPeerManager {
+func NewPeerManager(nodeID int, peers map[int]NodeInfo, replicate ReplicateFunc, factory IPeerProxyFactory) IPeerManager {
 	if len(peers) == 0 {
 		util.Panicln(errorNoPeersProvided)
 	}
@@ -99,129 +117,23 @@ func NewPeerManager(nodeID int, peers map[int]NodeInfo, factory IPeerProxyFactor
 	}
 
 	mgr := &PeerManager{
-		Peers: make(map[int]*Peer),
+		Peers:     make(map[int]*Peer),
+		Replicate: replicate,
+		ChStop:    make(chan interface{}),
 	}
 
+	// Initialize each peer
 	for _, info := range peers {
 		mgr.Peers[info.NodeID] = &Peer{
-			NodeInfo: info,
-			followerStatus: followerStatus{
-				nextIndex:  0,
-				matchIndex: -1,
-			},
-			proxy: factory.NewPeerProxy(info),
+			NodeInfo:       info,
+			nextIndex:      0,
+			matchIndex:     -1,
+			ReplicationSig: make(chan interface{}, 20),
+			IPeerProxy:     factory.NewPeerProxy(info),
 		}
 	}
 
 	return mgr
-}
-
-// ResetFollowerIndicies resets all follower's indices based on lastLogIndex
-func (mgr *PeerManager) ResetFollowerIndicies(lastLogIndex int) {
-	for _, p := range mgr.Peers {
-		p.nextIndex = lastLogIndex + 1
-		p.matchIndex = -1
-	}
-}
-
-// UpdateFollowerMatchIndex updates match index for a given node
-func (mgr *PeerManager) UpdateFollowerMatchIndex(nodeID int, matched bool, lastMatch int) {
-	peer := mgr.GetPeer(nodeID)
-
-	if matched {
-		util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", nodeID, lastMatch)
-		peer.nextIndex = lastMatch + 1
-		peer.matchIndex = lastMatch
-	} else {
-		util.WriteVerbose("Decreasing Node%d's nextIndex.", nodeID)
-		// prev entries don't match. decrement nextIndex.
-		// cap it to 0. It is meaningless when less than zero
-		peer.nextIndex = util.Max(0, peer.nextIndex-nextIndexFallbackStep)
-	}
-}
-
-// MajorityMatch tells whether we have majority of the followers match the given logIndex
-func (mgr *PeerManager) MajorityMatch(logIndex int) bool {
-	// both match count and majority should include the leader itself, which is not part of the peerManager
-	matchCnt := 1
-	majority := (len(mgr.Peers) + 1) / 2
-	for _, p := range mgr.Peers {
-		if p.matchIndex >= logIndex {
-			matchCnt++
-			if matchCnt > majority {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// AppendEntries sends AE request to a single node
-func (mgr *PeerManager) AppendEntries(nodeID int, req *AppendEntriesRequest, onReply func(*AppendEntriesReply)) {
-	// Send request to the peer node on different go routine
-	peer := mgr.GetPeer(nodeID)
-
-	go func() {
-		reply, err := peer.proxy.AppendEntries(req)
-
-		if err != nil {
-			util.WriteTrace("AppendEntry call failed to Node%d: %s", nodeID, err)
-			reply = nil
-		}
-
-		onReply(reply)
-	}()
-}
-
-// InstallSnapshot installs a snapshot on the target node
-func (mgr *PeerManager) InstallSnapshot(nodeID int, req *SnapshotRequest, onReply func(*AppendEntriesReply)) {
-	peer := mgr.GetPeer(nodeID)
-
-	go func() {
-		reply, err := peer.proxy.InstallSnapshot(req)
-
-		if err != nil {
-			util.WriteTrace("InstallSnapshot call failed to Node%d: %s", nodeID, err)
-			reply = nil
-		}
-
-		onReply(reply)
-	}()
-}
-
-// RequestVote handles raft RPC RV calls to a peer nodes
-func (mgr *PeerManager) RequestVote(nodeID int, req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
-	peer := mgr.GetPeer(nodeID)
-	go func() {
-		reply, err := peer.proxy.RequestVote(req)
-
-		if err != nil {
-			util.WriteTrace("RequestVote call failed to Node%d: %s", nodeID, err)
-			reply = nil
-		}
-
-		onReply(reply)
-	}()
-}
-
-// BroadcastRequestVote handles raft RPC RV calls to all peer nodes
-func (mgr *PeerManager) BroadcastRequestVote(req *RequestVoteRequest, onReply func(*RequestVoteReply)) {
-	for _, peer := range mgr.Peers {
-		mgr.RequestVote(peer.NodeID, req, onReply)
-	}
-}
-
-// Get gets values from state machine against leader, runs on current goroutine
-func (mgr *PeerManager) Get(nodeID int, req *GetRequest) (*GetReply, error) {
-	peer := mgr.GetPeer(nodeID)
-	return peer.proxy.Get(req)
-}
-
-// Execute runs a command via the leader, runs on current goroutine
-func (mgr *PeerManager) Execute(nodeID int, cmd *StateMachineCmd) (*ExecuteReply, error) {
-	peer := mgr.GetPeer(nodeID)
-	return peer.proxy.Execute(cmd)
 }
 
 // GetPeer gets the peer for a given node id
@@ -234,7 +146,86 @@ func (mgr *PeerManager) GetPeer(nodeID int) *Peer {
 	return peer
 }
 
-// GetAllPeers returns all the peers
-func (mgr *PeerManager) GetAllPeers() map[int]*Peer {
+// GetPeers returns all the peers
+func (mgr *PeerManager) GetPeers() map[int]*Peer {
 	return mgr.Peers
+}
+
+// ResetFollowerIndicies resets all follower's indices based on lastLogIndex
+func (mgr *PeerManager) ResetFollowerIndicies(lastLogIndex int) {
+	for _, p := range mgr.Peers {
+		p.nextIndex = lastLogIndex + 1
+		p.matchIndex = -1
+	}
+}
+
+// QuorumReached tells whether we have majority of the followers match the given logIndex
+func (mgr *PeerManager) QuorumReached(logIndex int) bool {
+	// both match count and majority should include the leader itself, which is not part of the peerManager
+	matchCnt := 1
+	quorum := (len(mgr.Peers) + 1) / 2
+	for _, p := range mgr.Peers {
+		if p.matchIndex >= logIndex {
+			matchCnt++
+			if matchCnt > quorum {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Start starts a replication goroutine for each follower
+func (mgr *PeerManager) Start() {
+	mgr.wg.Add(len(mgr.Peers))
+
+	for _, p := range mgr.Peers {
+		go func(follower *Peer) {
+			stop := false
+			for !stop {
+				select {
+				case <-follower.ReplicationSig:
+					mgr.Replicate(follower.NodeID)
+				case <-mgr.ChStop:
+					stop = true
+					break
+				}
+			}
+			mgr.wg.Done()
+		}(p)
+	}
+}
+
+// Stop stops the replication goroutines
+func (mgr *PeerManager) Stop() {
+	close(mgr.ChStop)
+	mgr.wg.Wait()
+}
+
+// RunAndWaitAllPeers Run an action against all peers and wait for response
+// This function returns a channel of objects generated by the action against each node
+// Note number of objects in the channel doesn't have to be the same as number of peers - e.g. some peer failed
+func (mgr *PeerManager) RunAndWaitAllPeers(action func(*Peer) interface{}) chan interface{} {
+	peers := mgr.GetPeers()
+	count := len(peers)
+	replies := make(chan interface{}, count)
+
+	var wg sync.WaitGroup
+
+	wg.Add(count)
+	for _, p := range peers {
+		go func(peer *Peer) {
+			ret := action(peer)
+			if ret != nil {
+				replies <- ret
+			}
+			wg.Done()
+		}(p)
+	}
+	wg.Wait()
+
+	// close replies and return
+	close(replies)
+	return replies
 }
