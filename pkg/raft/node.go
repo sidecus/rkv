@@ -72,7 +72,6 @@ type node struct {
 	votes         map[int]bool // resets when entering candidate state
 	logMgr        ILogManager
 	peerMgr       IPeerManager
-	replicator    IReplicator
 
 	// timer
 	timer IRaftTimer
@@ -102,11 +101,10 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		votedFor:      -1,
 		votes:         make(map[int]bool, size),
 		logMgr:        NewLogMgr(nodeID, sm),
-		peerMgr:       NewPeerManager(nodeID, peers, proxyFactory),
 	}
 
 	n.timer = NewRaftTimer(n.onTimer)
-	n.replicator = NewReplicator(peers, n.replicateData)
+	n.peerMgr = NewPeerManager(nodeID, peers, n.replicateData, proxyFactory)
 
 	return n
 }
@@ -125,7 +123,7 @@ func (n *node) Start() {
 
 	// Enter follower state
 	n.timer.Start()
-	n.replicator.Start()
+	n.peerMgr.Start()
 	n.enterFollowerState(n.nodeID, 0)
 	n.refreshTimer()
 }
@@ -136,7 +134,7 @@ func (n *node) Stop() {
 	defer n.mu.Unlock()
 
 	n.timer.Stop()
-	n.replicator.Stop()
+	n.peerMgr.Stop()
 }
 
 // Get gets values from state machine, no need to proxy
@@ -173,16 +171,27 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 		// Process the command
 		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
 
-		// Send to followers and wait for response. then update follower indicies from all replies
-		replies := n.replicateNewEntry()
-		for reply := range replies {
-			if reply != nil {
-				n.replicator.UpdateFollowerMatchIndex(reply.NodeID, reply.Success, reply.LastMatch)
+		// Send to followers and wait for response.
+		req := n.createAERequest(n.logMgr.LastIndex(), 1)
+		aeReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
+			reply, err := peer.AppendEntries(req)
+			if err != nil {
+				util.WriteVerbose("T%d: Replicating new entry to Node%d failed. %s\n", n.currentTerm, peer.NodeID, err)
+				return nil
 			}
+			util.WriteVerbose("T%d: Replicating new entry to Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, peer.NodeID, reply.Success, reply.LastMatch)
+			return reply
+		})
+
+		// Update match index based on each reply
+		for r := range aeReplies {
+			reply := r.(*AppendEntriesReply)
+			follower := n.peerMgr.GetPeer(reply.NodeID)
+			follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
 		}
 
 		// If we have majority matche the last entry, commit
-		if n.replicator.QuorumReached(n.logMgr.LastIndex()) {
+		if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
 			n.commitTo(n.logMgr.LastIndex())
 			success = true
 		} else {
@@ -200,7 +209,7 @@ func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
 
 	// proxy to leader instead, no lock needed
 	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
-	return n.peerMgr.Execute(leader, cmd)
+	return n.peerMgr.GetPeer(leader).Execute(cmd)
 }
 
 // AppendEntries handles raft RPC AE calls
@@ -312,17 +321,6 @@ func (n *node) onTimer(state NodeState, term int) {
 	}
 }
 
-// enterLeaderState resets leader indicies. Caller should acquire writer lock
-func (n *node) enterLeaderState() {
-	n.nodeState = NodeStateLeader
-	n.currentLeader = n.nodeID
-
-	// reset all follower's indicies
-	n.replicator.ResetFollowerIndicies(n.logMgr.LastIndex())
-
-	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
-}
-
 // enter follower state and follows new leader (or potential leader)
 func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	oldLeader := n.currentLeader
@@ -349,6 +347,58 @@ func (n *node) enterCandidateState() {
 	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
+// start an election, caller should acquire write lock
+func (n *node) startElection() {
+	n.enterCandidateState()
+
+	// Request vote to all nodes and wait for replies
+	req := &RequestVoteRequest{
+		Term:         n.currentTerm,
+		CandidateID:  n.nodeID,
+		LastLogIndex: n.logMgr.LastIndex(),
+		LastLogTerm:  n.logMgr.LastTerm(),
+	}
+	rvReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
+		reply, err := peer.RequestVote(req)
+		if err != nil {
+			return nil
+		}
+		util.WriteTrace("T%d: Vote received from Node%d, term:%d\n", n.currentTerm, reply.NodeID, reply.VotedTerm)
+		return reply
+	})
+
+	// reset election timer before processing replies, don't do it after reply processing
+	n.refreshTimer()
+
+	// process replies
+	n.handleRequestVoteReplies(rvReplies)
+}
+
+// handleRequestVoteReplies processes RV replies
+func (n *node) handleRequestVoteReplies(replies chan interface{}) {
+	for v := range replies {
+		reply := v.(*RequestVoteReply)
+
+		if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
+			return // there is a higher term, no need to continue
+		}
+
+		if !reply.VoteGranted {
+			// stale vote or denied, ignore
+			util.WriteTrace("T%d: Stale or ungranted vote received from Node%d, term:%d, voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
+			continue
+		}
+
+		// record and count votes
+		n.votes[reply.NodeID] = true
+	}
+
+	if n.wonElection() {
+		n.enterLeaderState()
+		n.sendHeartbeat()
+	}
+}
+
 // Check peer's term and follow if needed. This will be called upon all RPC request and responses.
 // Returns true if we are following the given node and term
 func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool) bool {
@@ -371,201 +421,6 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 	return follow
 }
 
-// start an election, caller should acquire write lock
-func (n *node) startElection() {
-	n.enterCandidateState()
-
-	// create RV request
-	req := &RequestVoteRequest{
-		Term:         n.currentTerm,
-		CandidateID:  n.nodeID,
-		LastLogIndex: n.logMgr.LastIndex(),
-		LastLogTerm:  n.logMgr.LastTerm(),
-	}
-
-	// request vote (on different goroutines), response will be processed there
-	n.peerMgr.BroadcastRequestVote(req, func(reply *RequestVoteReply) { n.onRequestVoteReply(reply) })
-
-	n.refreshTimer()
-}
-
-// callback to be invoked when reply is received (on different goroutine so we need to acquire lock)
-func (n *node) onRequestVoteReply(reply *RequestVoteReply) {
-	if reply == nil {
-		return
-	}
-
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
-		return // there is a higher term, no need to continue
-	}
-
-	if reply.VotedTerm != n.currentTerm || n.nodeState != NodeStateCandidate || !reply.VoteGranted {
-		// stale vote or denied, ignore
-		util.WriteTrace("T%d: Stale or ungranted vote received from Node%d, term:%d, voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
-		return
-	}
-
-	// record and count votes
-	util.WriteTrace("T%d: Vote received from Node%d, term:%d\n", n.currentTerm, reply.NodeID, reply.VotedTerm)
-	n.votes[reply.NodeID] = true
-	if n.wonElection() {
-		n.enterLeaderState()
-		n.sendHeartbeat()
-	}
-}
-
-// send heartbeat, caller should acquire at least reader lock
-func (n *node) sendHeartbeat() {
-	for _, follower := range n.replicator.GetFollowers() {
-		maxEntryCount := maxAppendEntriesCount
-		if !follower.HasMatch() {
-			maxEntryCount = 0 // no payload needed if no match yet
-		}
-		req := n.createAERequest(follower.nextIndex, maxEntryCount)
-		util.WriteVerbose("T%d: Sending heartbeat to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", n.currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
-		n.peerMgr.AppendEntries(follower.NodeID, req, n.onAppendEntriesReply)
-	}
-
-	// 5.2 - refresh timer
-	n.refreshTimer()
-}
-
-// onAppendEntriesReply handles append entries reply for heatbeat triggered replications. Need locking since this will be
-// running on different goroutine for reply from each node
-func (n *node) onAppendEntriesReply(reply *AppendEntriesReply) {
-	if reply == nil {
-		return
-	}
-
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// If there is a higher term, follow and stop processing
-	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
-		return
-	}
-
-	// Different from the paper, we don't wait for AE call to finish
-	// so there is a chance that we are no longer the leader
-	// In that case no need to continue
-	if n.nodeState != NodeStateLeader || n.currentTerm != reply.Term {
-		return
-	}
-
-	followerID := reply.NodeID
-
-	// 5.3 update leader indicies.
-	// Kindly note: since we proces this asynchronously, we cannot use n.logMgr.lastIndex
-	// to update follower indicies (it might be different from when the AE request is sent and when the reply is received).
-	// Here we added a LastMatch field on AppendEntries reply. And it's used instead
-	n.replicator.UpdateFollowerMatchIndex(followerID, reply.Success, reply.LastMatch)
-
-	// Check whether there are logs to commit
-	n.passiveCommit()
-
-	// replicate more if needed
-	follower := n.replicator.GetFollower(followerID)
-	if follower.matchIndex < n.logMgr.LastIndex() {
-		n.replicator.Synchronize(followerID)
-	}
-}
-
-// replicateData replicates data to follower. It replicates snapshot or next batch of logs to the follower if we know
-// where to continue. Otherwise it sends heartbeat like AE request.
-// If follower has caught up already, it does nothing
-func (n *node) replicateData(followerID int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	if n.nodeState != NodeStateLeader {
-		return
-	}
-
-	follower := n.replicator.GetFollower(followerID)
-	if follower.matchIndex >= n.logMgr.LastIndex() {
-		return
-	}
-
-	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
-		// Send snapshot if nextIndex is too small and we do want to send snapshot
-		req := n.createSnapshotRequest()
-		util.WriteInfo("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, follower.NodeID, n.logMgr.SnapshotIndex())
-		n.peerMgr.InstallSnapshot(follower.NodeID, req, n.onAppendEntriesReply)
-	} else {
-		maxEntryCount := maxAppendEntriesCount
-		if !follower.HasMatch() {
-			// if we haven't had a match yet, no need to send any payload
-			maxEntryCount = 0
-		}
-		req := n.createAERequest(follower.nextIndex, maxEntryCount)
-		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", n.currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
-		n.peerMgr.AppendEntries(follower.NodeID, req, n.onAppendEntriesReply)
-	}
-}
-
-// replicateNewEntry replicates last log entry to all followers and wait for their response
-func (n *node) replicateNewEntry() chan *AppendEntriesReply {
-	followers := n.replicator.GetFollowers()
-	followerCount := len(followers)
-	replies := make(chan *AppendEntriesReply, followerCount)
-	var wg sync.WaitGroup
-
-	req := n.createAERequest(n.logMgr.LastIndex(), 1)
-
-	// 5.3, 5.4 states that the leader need to wait for response synchronously and then commit
-	// We do this on different goroutines and wait for them to finish
-	wg.Add(followerCount)
-	for _, follower := range followers {
-		n.peerMgr.AppendEntries(follower.NodeID, req, func(reply *AppendEntriesReply) {
-			if reply != nil {
-				util.WriteVerbose("T%d: Execution triggered replication: Node%d received AE reply from Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, n.nodeID, follower.NodeID, reply.Success, reply.LastMatch)
-			} else {
-				util.WriteVerbose("T%d: Execution triggered replication: Node%d failed to receive AE reply from Node%d\n", n.currentTerm, n.nodeID, follower.NodeID)
-			}
-			replies <- reply
-			wg.Done()
-		})
-	}
-
-	// wait and close the channel
-	wg.Wait()
-	close(replies)
-
-	return replies
-}
-
-// passiveCommit commits logs to the last entry with consensus from majority in the same term
-// This should only be called by leader upon heartbeat response
-func (n *node) passiveCommit() {
-	commitIndex := n.logMgr.CommitIndex()
-	for i := n.logMgr.LastIndex(); i > n.logMgr.CommitIndex(); i-- {
-		entry := n.logMgr.GetLogEntry(i)
-
-		if entry.Term < n.currentTerm {
-			// 5.4.2 Raft doesn't allow committing of previous terms
-			// A leader shall only commit entries added by itself, and term is the indication of ownership
-			break
-		} else if entry.Term > n.currentTerm {
-			// This will never happen, adding for safety purpose
-			continue
-		}
-
-		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.replicator.QuorumReached(i) {
-			commitIndex = i
-			break
-		}
-	}
-
-	if commitIndex > n.logMgr.CommitIndex() {
-		util.WriteTrace("T%d: Node%d committing to L%d upon quorum", n.currentTerm, n.nodeID, commitIndex)
-		n.commitTo(commitIndex)
-	}
-}
-
 // commitTo tries to commit to the target commit index
 // Called by both leader (upon AE reply) or follower (upon AE request)
 func (n *node) commitTo(targetCommitIndex int) {
@@ -574,38 +429,6 @@ func (n *node) commitTo(targetCommitIndex int) {
 		if newSnapshot {
 			util.WriteInfo("T%d: Node%d created new snapshot L%d_T%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotIndex(), n.logMgr.SnapshotTerm())
 		}
-	}
-}
-
-// createAERequest creates an AppendEntriesRequest with proper log payload
-func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
-	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
-	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
-	startIdx := util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
-	endIdx := util.Min(n.logMgr.LastIndex()+1, startIdx+maxCnt)
-
-	entries, prevIdx, prevTerm := n.logMgr.GetLogEntries(startIdx, endIdx)
-
-	req := &AppendEntriesRequest{
-		Term:         n.currentTerm,
-		LeaderID:     n.nodeID,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-		Entries:      entries,
-		LeaderCommit: n.logMgr.CommitIndex(),
-	}
-
-	return req
-}
-
-// createSnapshotRequest creates a snapshot request to send to follower
-func (n *node) createSnapshotRequest() *SnapshotRequest {
-	return &SnapshotRequest{
-		Term:          n.currentTerm,
-		LeaderID:      n.nodeID,
-		SnapshotIndex: n.logMgr.SnapshotIndex(),
-		SnapshotTerm:  n.logMgr.SnapshotTerm(),
-		File:          n.logMgr.SnapshotFile(),
 	}
 }
 

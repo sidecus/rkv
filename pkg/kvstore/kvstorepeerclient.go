@@ -60,7 +60,7 @@ func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest) (reply 
 		reply = toRaftAEReply(resp)
 	}
 
-	return reply, nil
+	return reply, err
 }
 
 // RequestVote handles raft RPC RV calls to a given node

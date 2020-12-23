@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 2000
+const snapshotEntriesCount = 3000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
