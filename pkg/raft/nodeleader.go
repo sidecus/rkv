@@ -1,8 +1,14 @@
 package raft
 
 import (
+	"context"
+	"time"
+
 	"github.com/sidecus/raft/pkg/util"
 )
+
+const rpcTimeOut = time.Duration(200) * time.Millisecond
+const rpcSnapshotTimeout = rpcTimeOut * 3
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
@@ -40,12 +46,14 @@ func (n *node) replicateData(followerID int) {
 	follower := n.peerMgr.GetPeer(followerID)
 	var reply *AppendEntriesReply
 	var err error
+	ctx, cancel := context.WithTimeout(context.Background(), rpcSnapshotTimeout)
+	defer cancel()
 
 	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
 		// Send snapshot if nextIndex is too small and we do want to send snapshot
 		req := n.createSnapshotRequest()
 		util.WriteTrace("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, follower.NodeID, n.logMgr.SnapshotIndex())
-		reply, err = follower.InstallSnapshot(req)
+		reply, err = follower.InstallSnapshot(ctx, req)
 	} else {
 		maxEntryCount := maxAppendEntriesCount
 		if !follower.HasMatch() {
@@ -54,7 +62,7 @@ func (n *node) replicateData(followerID int) {
 		}
 		req := n.createAERequest(follower.nextIndex, maxEntryCount)
 		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", n.currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
-		reply, err = follower.AppendEntries(req)
+		reply, err = follower.AppendEntries(ctx, req)
 	}
 
 	if err != nil {
