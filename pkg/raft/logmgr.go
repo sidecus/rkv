@@ -311,13 +311,13 @@ func (lm *LogManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 		util.Panicf("prevLogIndex %d or prevLogTerm %d is -1 but the other is not\n", prevLogIndex, prevLogTerm)
 	}
 
-	term := lm.lastTerm
+	term := prevLogTerm
 	for i, v := range entries {
 		if v.Index != prevLogIndex+1+i {
 			util.Panicf("new entry's index (%dth) is not continuous after match prevLogIndex %d\n", v.Index, prevLogIndex)
 		}
 		if v.Term < term {
-			util.Panicf("new entry (index %d) has invalid term d\n", v.Index)
+			util.Panicf("new entry (index %d) has invalid term\n", v.Index)
 		}
 		term = v.Term
 	}
