@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
@@ -13,19 +12,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-const rpcTimeOut = time.Duration(200) * time.Millisecond
-const snapshotRPCTimeout = rpcTimeOut * 3
-
-// We need to fine tune below value. If server is busy, a short timeout will cause unnecessary excessive rejection.
-const proxyRPCTimeout = rpcTimeOut * 10
-
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor Delete")
 
 // KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
 type KVPeerClient struct {
 	raft.NodeInfo
-	client pb.KVStoreRaftClient
+	rpcClient pb.KVStoreRaftClient
 }
 
 // KVPeerClientFactory is the const factory instance
@@ -46,17 +39,14 @@ func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 			NodeID:   info.NodeID,
 			Endpoint: info.Endpoint,
 		},
-		client: client,
+		rpcClient: client,
 	}
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-	defer cancel()
-
+func (proxy *KVPeerClient) AppendEntries(ctx context.Context, req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
 	var resp *pb.AppendEntriesReply
-	if resp, err = proxy.client.AppendEntries(ctx, fromRaftAERequest(req)); err == nil {
+	if resp, err = proxy.rpcClient.AppendEntries(ctx, fromRaftAERequest(req)); err == nil {
 		reply = toRaftAEReply(resp)
 	}
 
@@ -64,13 +54,10 @@ func (proxy *KVPeerClient) AppendEntries(req *raft.AppendEntriesRequest) (reply 
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-	defer cancel()
-
+func (proxy *KVPeerClient) RequestVote(ctx context.Context, req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
 	var resp *pb.RequestVoteReply
 	rv := fromRaftRVRequest(req)
-	if resp, err = proxy.client.RequestVote(ctx, rv); err == nil {
+	if resp, err = proxy.rpcClient.RequestVote(ctx, rv); err == nil {
 		reply = toRaftRVReply(resp)
 	}
 
@@ -79,11 +66,8 @@ func (proxy *KVPeerClient) RequestVote(req *raft.RequestVoteRequest) (reply *raf
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 // onReply is gauranteed to be called
-func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), snapshotRPCTimeout)
-	defer cancel()
-
-	stream, err := proxy.client.InstallSnapshot(ctx)
+func (proxy *KVPeerClient) InstallSnapshot(ctx context.Context, req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
+	stream, err := proxy.rpcClient.InstallSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -109,16 +93,13 @@ func (proxy *KVPeerClient) InstallSnapshot(req *raft.SnapshotRequest) (reply *ra
 }
 
 // Get gets values from state machine against leader
-func (proxy *KVPeerClient) Get(req *raft.GetRequest) (*raft.GetReply, error) {
+func (proxy *KVPeerClient) Get(ctx context.Context, req *raft.GetRequest) (*raft.GetReply, error) {
 	if len(req.Params) != 1 {
 		return nil, errorInvalidGetRequest
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-	defer cancel()
-
 	gr := fromRaftGetRequest(req)
-	resp, err := proxy.client.Get(ctx, gr)
+	resp, err := proxy.rpcClient.Get(ctx, gr)
 
 	if err != nil {
 		return nil, err
@@ -128,8 +109,8 @@ func (proxy *KVPeerClient) Get(req *raft.GetRequest) (*raft.GetReply, error) {
 }
 
 // Execute runs a command via the leader
-func (proxy *KVPeerClient) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
-	executeMap := make(map[int]func(*raft.StateMachineCmd) (*raft.ExecuteReply, error), 2)
+func (proxy *KVPeerClient) Execute(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+	executeMap := make(map[int]func(context.Context, *raft.StateMachineCmd) (*raft.ExecuteReply, error), 2)
 	executeMap[KVCmdSet] = proxy.executeSet
 	executeMap[KVCmdDel] = proxy.executeDelete
 
@@ -138,41 +119,35 @@ func (proxy *KVPeerClient) Execute(cmd *raft.StateMachineCmd) (*raft.ExecuteRepl
 		return nil, errorInvalidExecuteRequest
 	}
 
-	return handler(cmd)
+	return handler(ctx, cmd)
 }
 
-func (proxy *KVPeerClient) executeSet(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+func (proxy *KVPeerClient) executeSet(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 	if cmd.CmdType != KVCmdSet {
 		util.Panicln("Wrong cmd passed to executeSet")
 	}
 
 	req := fromRaftSetRequest(cmd)
 
-	ctx, cancel := context.WithTimeout(context.Background(), proxyRPCTimeout)
-	defer cancel()
-
 	var resp *pb.SetReply
 	var err error
-	if resp, err = proxy.client.Set(ctx, req); err != nil {
+	if resp, err = proxy.rpcClient.Set(ctx, req); err != nil {
 		return nil, fmt.Errorf("Error proxying Set request to leader. %s", err)
 	}
 
 	return toRaftSetReply(resp), nil
 }
 
-func (proxy *KVPeerClient) executeDelete(cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+func (proxy *KVPeerClient) executeDelete(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 	if cmd.CmdType != KVCmdDel {
 		util.Panicln("Wrong cmd passed to executeDelete")
 	}
 
 	req := fromRaftDeleteRequest(cmd)
 
-	ctx, cancel := context.WithTimeout(context.Background(), proxyRPCTimeout)
-	defer cancel()
-
 	var resp *pb.DeleteReply
 	var err error
-	if resp, err = proxy.client.Delete(ctx, req); err != nil {
+	if resp, err = proxy.rpcClient.Delete(ctx, req); err != nil {
 		return nil, fmt.Errorf("Error proxying Del request to leader. %s", err)
 	}
 

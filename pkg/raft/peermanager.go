@@ -15,23 +15,7 @@ var errorInvalidNodeID = errors.New("Invalid node id")
 // IPeerProxy defines the RPC client interface for a specific peer nodes
 // It's an abstraction layer so that concrete implementation (RPC or REST) can be decoupled from this package
 type IPeerProxy interface {
-	// AppendEntries calls a peer node to append entries.
-	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error)
-
-	// RequestVote calls a peer node to vote.
-	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error)
-
-	// InstallSnapshot calls a peer node to install a snapshot.
-	// interface implementation needs to ensure onReply is called regardless of whether the called failed or not. On failure, call onReply with nil
-	InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error)
-
-	// Get invokes a peer node to get values
-	Get(req *GetRequest) (*GetReply, error)
-
-	// Execute invokes a node (usually the leader) to do set or delete operations
-	Execute(cmd *StateMachineCmd) (*ExecuteReply, error)
+	INodeRPCProvider
 }
 
 // IPeerProxyFactory creates a new proxy

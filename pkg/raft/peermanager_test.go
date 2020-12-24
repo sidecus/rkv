@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -13,7 +14,7 @@ type MockPeerProxy struct {
 	isReq  *SnapshotRequest
 }
 
-func (proxy *MockPeerProxy) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+func (proxy *MockPeerProxy) AppendEntries(ctx context.Context, req *AppendEntriesRequest) (*AppendEntriesReply, error) {
 	proxy.aeReq = req
 	return &AppendEntriesReply{
 		NodeID:    proxy.nodeID,
@@ -22,10 +23,10 @@ func (proxy *MockPeerProxy) AppendEntries(req *AppendEntriesRequest) (*AppendEnt
 		Success:   true,
 	}, nil
 }
-func (proxy *MockPeerProxy) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+func (proxy *MockPeerProxy) RequestVote(ctx context.Context, req *RequestVoteRequest) (*RequestVoteReply, error) {
 	return nil, nil
 }
-func (proxy *MockPeerProxy) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error) {
+func (proxy *MockPeerProxy) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*AppendEntriesReply, error) {
 	proxy.isReq = req
 	return &AppendEntriesReply{
 		NodeID:    proxy.nodeID,
@@ -34,10 +35,10 @@ func (proxy *MockPeerProxy) InstallSnapshot(req *SnapshotRequest) (*AppendEntrie
 		Success:   true,
 	}, nil
 }
-func (proxy *MockPeerProxy) Get(req *GetRequest) (*GetReply, error) {
+func (proxy *MockPeerProxy) Get(ctx context.Context, req *GetRequest) (*GetReply, error) {
 	return nil, nil
 }
-func (proxy *MockPeerProxy) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
+func (proxy *MockPeerProxy) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
 	return nil, nil
 }
 

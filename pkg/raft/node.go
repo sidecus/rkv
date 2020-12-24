@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
@@ -10,11 +11,8 @@ import (
 
 const maxAppendEntriesCount = 20
 
-// NodeInfo contains info for a peer node including id and endpoint
-type NodeInfo struct {
-	NodeID   int
-	Endpoint string
-}
+// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // NodeState is the state of the node
 type NodeState int
@@ -28,34 +26,38 @@ const (
 	NodeStateLeader = 3
 )
 
-// INodeRPCProvider defines node functions used by RPC
-// These are invoked when an RPC request is received
+// NodeInfo contains info for a peer node including id and endpoint
+type NodeInfo struct {
+	NodeID   int
+	Endpoint string
+}
+
+// INodeRPCProvider interface defines the RPC related methods for a node
 type INodeRPCProvider interface {
-	// Gets the node's id
-	NodeID() int
+	// AppendEntries appends entries
+	AppendEntries(ctx context.Context, req *AppendEntriesRequest) (*AppendEntriesReply, error)
 
-	// Raft
-	AppendEntries(*AppendEntriesRequest) (*AppendEntriesReply, error)
-	RequestVote(*RequestVoteRequest) (*RequestVoteReply, error)
-	InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error)
+	// RequestVote requests for vote
+	RequestVote(ctx context.Context, req *RequestVoteRequest) (*RequestVoteReply, error)
 
-	// Data related
-	Get(*GetRequest) (*GetReply, error)
-	Execute(*StateMachineCmd) (*ExecuteReply, error)
+	// InstallSnapshot installs a snapshot.
+	InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*AppendEntriesReply, error)
+
+	// Get gets a committed and applied value from state machine
+	Get(ctx context.Context, req *GetRequest) (*GetReply, error)
+
+	// Execute runs a write operation
+	Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error)
 }
 
 // INode represents one raft node
 type INode interface {
-	// RPC
 	INodeRPCProvider
 
-	// Lifecycle
+	NodeID() int
 	Start()
 	Stop()
 }
-
-// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
-var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // node A raft node
 type node struct {
@@ -138,7 +140,7 @@ func (n *node) Stop() {
 }
 
 // Get gets values from state machine, no need to proxy
-func (n *node) Get(req *GetRequest) (*GetReply, error) {
+func (n *node) Get(ctx context.Context, req *GetRequest) (*GetReply, error) {
 	// We don't need lock on the node since we are only accessing its logMgr property which never changes after startup.
 	// However, this means the downstream component (statemachine) must implement proper locking. Our KVStore for exmaple, does it.
 	// n.mu.RLock()
@@ -160,60 +162,60 @@ func (n *node) Get(req *GetRequest) (*GetReply, error) {
 // Execute runs a command via the raft node
 // If current node is the leader, it'll append the cmd to logs
 // If current node is not the leader, it'll proxy the request to leader node
-func (n *node) Execute(cmd *StateMachineCmd) (*ExecuteReply, error) {
-	n.mu.Lock()
-
+func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	n.mu.RLock()
 	isLeader := n.nodeState == NodeStateLeader
 	leader := n.currentLeader
+	n.mu.RUnlock()
+
+	if !isLeader {
+		// We are not the leader, proxy to leader if we know who it is, or return error
+		// otherwise we might have a deadlock between this and the leader when processing AppendEntries
+		if leader == -1 {
+			return nil, errorNoLeaderAvailable
+		}
+		return n.peerMgr.GetPeer(leader).Execute(ctx, cmd)
+	}
+
+	// We are the leader, lock first and continue processing
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Process the command, replicate it to followers and wait for responses.
+	n.logMgr.ProcessCmd(*cmd, n.currentTerm)
+
+	req := n.createAERequest(n.logMgr.LastIndex(), 1)
+	aeReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
+		reply, err := peer.AppendEntries(ctx, req)
+		if err != nil {
+			util.WriteVerbose("T%d: Replicating new entry to Node%d failed. %s\n", n.currentTerm, peer.NodeID, err)
+			return nil
+		}
+		util.WriteVerbose("T%d: Replicating new entry to Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, peer.NodeID, reply.Success, reply.LastMatch)
+		return reply
+	})
+
+	// Update match index based on each reply
+	for r := range aeReplies {
+		reply := r.(*AppendEntriesReply)
+		follower := n.peerMgr.GetPeer(reply.NodeID)
+		follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
+	}
+
+	// If we have th quorum, commit directly
 	success := false
-
-	if isLeader {
-		// Process the command
-		n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-
-		// Send to followers and wait for response.
-		req := n.createAERequest(n.logMgr.LastIndex(), 1)
-		aeReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
-			reply, err := peer.AppendEntries(req)
-			if err != nil {
-				util.WriteVerbose("T%d: Replicating new entry to Node%d failed. %s\n", n.currentTerm, peer.NodeID, err)
-				return nil
-			}
-			util.WriteVerbose("T%d: Replicating new entry to Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, peer.NodeID, reply.Success, reply.LastMatch)
-			return reply
-		})
-
-		// Update match index based on each reply
-		for r := range aeReplies {
-			reply := r.(*AppendEntriesReply)
-			follower := n.peerMgr.GetPeer(reply.NodeID)
-			follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
-		}
-
-		// If we have majority matche the last entry, commit
-		if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
-			n.commitTo(n.logMgr.LastIndex())
-			success = true
-		} else {
-			util.WriteWarning("T%d: Node%d (leader) could not get quorum on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
-		}
+	if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
+		n.commitTo(n.logMgr.LastIndex())
+		success = true
+	} else {
+		util.WriteWarning("T%d: Node%d (leader) could not get quorum on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
 	}
 
-	n.mu.Unlock()
-
-	if isLeader {
-		return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
-	} else if leader == -1 {
-		return nil, errorNoLeaderAvailable
-	}
-
-	// proxy to leader instead, no lock needed
-	// otherwise we might have a deadlock between this and the leader when processing AppendEntries
-	return n.peerMgr.GetPeer(leader).Execute(cmd)
+	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
 }
 
 // AppendEntries handles raft RPC AE calls
-func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, error) {
+func (n *node) AppendEntries(ctx context.Context, req *AppendEntriesRequest) (*AppendEntriesReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -242,7 +244,7 @@ func (n *node) AppendEntries(req *AppendEntriesRequest) (*AppendEntriesReply, er
 }
 
 // InstallSnapshot installs a snapshot
-func (n *node) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error) {
+func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*AppendEntriesReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -279,7 +281,7 @@ func (n *node) InstallSnapshot(req *SnapshotRequest) (*AppendEntriesReply, error
 }
 
 // RequestVote handles raft RPC RV calls
-func (n *node) RequestVote(req *RequestVoteRequest) (*RequestVoteReply, error) {
+func (n *node) RequestVote(ctx context.Context, req *RequestVoteRequest) (*RequestVoteReply, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -358,8 +360,11 @@ func (n *node) startElection() {
 		LastLogIndex: n.logMgr.LastIndex(),
 		LastLogTerm:  n.logMgr.LastTerm(),
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+	defer cancel()
 	rvReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
-		reply, err := peer.RequestVote(req)
+		reply, err := peer.RequestVote(ctx, req)
 		if err != nil {
 			return nil
 		}
