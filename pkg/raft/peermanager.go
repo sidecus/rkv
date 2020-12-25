@@ -47,7 +47,7 @@ func (p *Peer) HasMoreToReplicate(lastIndex int) bool {
 // UpdateMatchIndex updates match index for a given node
 func (p *Peer) UpdateMatchIndex(match bool, lastMatch int) {
 	if match {
-		if p.matchIndex != lastMatch {
+		if p.matchIndex < lastMatch {
 			util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", p.NodeID, lastMatch)
 			p.nextIndex = lastMatch + 1
 			p.matchIndex = lastMatch

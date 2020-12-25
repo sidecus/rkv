@@ -147,9 +147,9 @@ func TestUpdateMatchIndex(t *testing.T) {
 	// has new match
 	follower0.nextIndex = 5
 	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(true, -1)
-	if follower0.nextIndex != 0 || follower0.matchIndex != -1 {
-		t.Error("updateMatchIndex fails with successful match on -1")
+	follower0.UpdateMatchIndex(true, 2)
+	if follower0.nextIndex != 5 || follower0.matchIndex != 3 {
+		t.Error("updateMatchIndex should ignore stale matches")
 	}
 
 	follower0.nextIndex = 5

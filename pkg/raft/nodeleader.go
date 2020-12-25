@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -9,6 +10,8 @@ import (
 
 const rpcTimeOut = time.Duration(200) * time.Millisecond
 const rpcSnapshotTimeout = rpcTimeOut * 3
+
+var errNoLongerLeader = errors.New("Node is no longer leader")
 
 // enterLeaderState resets leader indicies. Caller should acquire writer lock
 func (n *node) enterLeaderState() {
@@ -36,46 +39,64 @@ func (n *node) sendHeartbeat() {
 // There are two cases where there is noting to replicate: a. we are still looking for a matching index. b. there is no new info
 // This is called in the replication goroutine for each follower
 func (n *node) replicateData(followerID int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	replicateFunc := n.prepareReplicate(followerID)
+	reply, err := replicateFunc()
+
+	if err != nil {
+		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, followerID, err)
+		return
+	}
+
+	n.handleReplicationReply(reply)
+}
+
+// prepareReplicate prepares replication for the given node.
+// We need reader lock on node
+func (n *node) prepareReplicate(followerID int) func() (*AppendEntriesReply, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
 	if n.nodeState != NodeStateLeader {
-		return
+		return func() (*AppendEntriesReply, error) {
+			return nil, errNoLongerLeader
+		}
 	}
 
 	follower := n.peerMgr.GetPeer(followerID)
-	var reply *AppendEntriesReply
-	var err error
-	ctx, cancel := context.WithTimeout(context.Background(), rpcSnapshotTimeout)
-	defer cancel()
+	currentTerm := n.currentTerm
+	snapshotIndex := n.logMgr.SnapshotIndex()
 
-	if follower.nextIndex <= n.logMgr.SnapshotIndex() {
-		// Send snapshot if nextIndex is too small and we do want to send snapshot
+	// Return a func to send snapshot when needed
+	if follower.nextIndex <= snapshotIndex {
 		req := n.createSnapshotRequest()
-		util.WriteTrace("T%d: Node%d sending snapshot to Node%d (L%d)\n", n.currentTerm, n.nodeID, follower.NodeID, n.logMgr.SnapshotIndex())
-		reply, err = follower.InstallSnapshot(ctx, req)
-	} else {
-		maxEntryCount := maxAppendEntriesCount
-		if !follower.HasMatch() {
-			// if we haven't had a match yet, no need to send any payload
-			maxEntryCount = 0
+		return func() (*AppendEntriesReply, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), rpcSnapshotTimeout)
+			defer cancel()
+			util.WriteTrace("T%d: Sending snapshot to Node%d (L%d)\n", currentTerm, follower.NodeID, snapshotIndex)
+			return follower.InstallSnapshot(ctx, req)
 		}
-		req := n.createAERequest(follower.nextIndex, maxEntryCount)
-		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", n.currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
-		reply, err = follower.AppendEntries(ctx, req)
 	}
 
-	if err != nil {
-		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, follower.NodeID, err)
-		return
+	// Return a func to send logs
+	maxEntryCount := maxAppendEntriesCount
+	if !follower.HasMatch() {
+		maxEntryCount = 0
 	}
-
-	n.handleAppendEntriesReply(reply)
+	req := n.createAERequest(follower.nextIndex, maxEntryCount)
+	return func() (*AppendEntriesReply, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+		defer cancel()
+		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
+		return follower.AppendEntries(ctx, req)
+	}
 }
 
-// handleAppendEntriesReply handles append entries reply for heatbeat triggered replications. Need locking since this will be
-// running on different goroutine for reply from each node
-func (n *node) handleAppendEntriesReply(reply *AppendEntriesReply) {
+// handleReplicationReply handles append entries reply for replications.
+// Need writer lock
+func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	// If there is a higher term, follow and stop processing
 	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
 		return
