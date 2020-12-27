@@ -3,8 +3,6 @@ package raft
 import (
 	"context"
 	"testing"
-
-	"github.com/sidecus/raft/pkg/util"
 )
 
 // PeerProxy mock
@@ -62,7 +60,7 @@ func createTestPeerInfo(n int) map[int]NodeInfo {
 }
 
 func createTestPeerManager(size int) IPeerManager {
-	replicateFunc := func(int) {}
+	replicateFunc := func(x int) int { return x }
 	peers := createTestPeerInfo(size)
 	peerMgr := NewPeerManager(size, peers, replicateFunc, &MockPeerFactory{})
 
@@ -136,41 +134,5 @@ func TestQuorumReached(t *testing.T) {
 		if expected != result {
 			t.Errorf("QuorumReached failed on index %d", i)
 		}
-	}
-}
-
-func TestUpdateMatchIndex(t *testing.T) {
-	mgr := createTestPeerManager(3).(*PeerManager)
-
-	follower0 := mgr.GetPeer(0)
-
-	// has new match
-	follower0.nextIndex = 5
-	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(true, -1)
-	if follower0.nextIndex != 0 || follower0.matchIndex != -1 {
-		t.Error("updateMatchIndex fails with successful match on -1")
-	}
-
-	follower0.nextIndex = 5
-	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(true, 6)
-	if follower0.nextIndex != 7 || follower0.matchIndex != 6 {
-		t.Error("updateMatchIndex fails with successful match on 6")
-	}
-
-	// no match
-	follower0.nextIndex = 8
-	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(false, -2)
-	if follower0.nextIndex != util.Max(0, 8-nextIndexFallbackStep) || follower0.matchIndex != -1 {
-		t.Error("updateMatchIndex doesn't decrease nextIndex correctly or set match index to -1 upon failed match")
-	}
-
-	follower0.nextIndex = 0
-	follower0.matchIndex = -1
-	follower0.UpdateMatchIndex(false, -2)
-	if follower0.nextIndex != 0 || follower0.matchIndex != -1 {
-		t.Error("updateMatchIndex unnecessarily decrease nextIndex when it's already 0 upon failure")
 	}
 }
