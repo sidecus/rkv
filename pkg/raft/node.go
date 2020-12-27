@@ -9,7 +9,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const maxAppendEntriesCount = 20
+const maxAppendEntriesCount = 50
 
 // errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
 var errorNoLeaderAvailable = errors.New("No leader currently available")
@@ -164,11 +164,11 @@ func (n *node) Get(ctx context.Context, req *GetRequest) (*GetReply, error) {
 // If current node is not the leader, it'll proxy the request to leader node
 func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
 	n.mu.RLock()
-	isLeader := n.nodeState == NodeStateLeader
+	state := n.nodeState
 	leader := n.currentLeader
 	n.mu.RUnlock()
 
-	if !isLeader {
+	if state != NodeStateLeader {
 		// We are not the leader, proxy to leader if we know who it is, or return error
 		// otherwise we might have a deadlock between this and the leader when processing AppendEntries
 		if leader == -1 {
@@ -177,41 +177,7 @@ func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply
 		return n.peerMgr.GetPeer(leader).Execute(ctx, cmd)
 	}
 
-	// We are the leader, lock first and continue processing
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// Process the command, replicate it to followers and wait for responses.
-	n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-
-	req := n.createAERequest(n.logMgr.LastIndex(), 1)
-	aeReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
-		reply, err := peer.AppendEntries(ctx, req)
-		if err != nil {
-			util.WriteVerbose("T%d: Replicating new entry to Node%d failed. %s\n", n.currentTerm, peer.NodeID, err)
-			return nil
-		}
-		util.WriteVerbose("T%d: Replicating new entry to Node%d. Success:%t, lastMatch:%d\n", n.currentTerm, peer.NodeID, reply.Success, reply.LastMatch)
-		return reply
-	})
-
-	// Update match index based on each reply
-	for r := range aeReplies {
-		reply := r.(*AppendEntriesReply)
-		follower := n.peerMgr.GetPeer(reply.NodeID)
-		follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
-	}
-
-	// If we have th quorum, commit directly
-	success := false
-	if n.peerMgr.QuorumReached(n.logMgr.LastIndex()) {
-		n.commitTo(n.logMgr.LastIndex())
-		success = true
-	} else {
-		util.WriteWarning("T%d: Node%d (leader) could not get quorum on new entry L%d", n.currentTerm, n.nodeID, n.logMgr.LastIndex())
-	}
-
-	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
+	return n.leaderExecute(ctx, cmd)
 }
 
 // AppendEntries handles raft RPC AE calls
@@ -363,7 +329,7 @@ func (n *node) startElection() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 	defer cancel()
-	rvReplies := n.peerMgr.RunAndWaitAllPeers(func(peer *Peer) interface{} {
+	rvReplies := n.peerMgr.GoWaitAllPeers(func(peer *Peer) interface{} {
 		reply, err := peer.RequestVote(ctx, req)
 		if err != nil {
 			return nil
@@ -380,7 +346,7 @@ func (n *node) startElection() {
 }
 
 // handleRequestVoteReplies processes RV replies
-func (n *node) handleRequestVoteReplies(replies chan interface{}) {
+func (n *node) handleRequestVoteReplies(replies <-chan interface{}) {
 	for v := range replies {
 		reply := v.(*RequestVoteReply)
 

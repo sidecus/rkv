@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -27,7 +28,7 @@ func (n *node) enterLeaderState() {
 // send heartbeat, caller should acquire at least reader lock
 func (n *node) sendHeartbeat() {
 	for _, p := range n.peerMgr.GetPeers() {
-		p.TriggerReplication()
+		p.TryTriggerProcess()
 	}
 
 	// 5.2 - refresh timer
@@ -35,24 +36,22 @@ func (n *node) sendHeartbeat() {
 }
 
 // replicateData replicates data to follower. It replicates snapshot or next batch of logs to the follower.
-// If nothing more to replicate, it'll send heartbeat like message with empty entries.
-// There are two cases where there is noting to replicate: a. we are still looking for a matching index. b. there is no new info
+// If nothing more to replicate, it'll send message with empty payload.
 // This is called in the replication goroutine for each follower
-func (n *node) replicateData(followerID int) {
-	replicateFunc := n.prepareReplicate(followerID)
-	reply, err := replicateFunc()
-
-	if err != nil {
+func (n *node) replicateData(followerID int) int {
+	replicate := n.prepareReplication(followerID)
+	if reply, err := replicate(); err != nil {
 		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, followerID, err)
-		return
+	} else {
+		n.handleReplicationReply(reply)
 	}
 
-	n.handleReplicationReply(reply)
+	return n.peerMgr.GetPeer(followerID).matchIndex
 }
 
-// prepareReplicate prepares replication for the given node.
+// prepareReplication prepares replication for the given node.
 // We need reader lock on node
-func (n *node) prepareReplicate(followerID int) func() (*AppendEntriesReply, error) {
+func (n *node) prepareReplication(followerID int) func() (*AppendEntriesReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
@@ -66,7 +65,7 @@ func (n *node) prepareReplicate(followerID int) func() (*AppendEntriesReply, err
 	currentTerm := n.currentTerm
 	snapshotIndex := n.logMgr.SnapshotIndex()
 
-	// Return a func to send snapshot when needed
+	// Snapshot scenario
 	if follower.nextIndex <= snapshotIndex {
 		req := n.createSnapshotRequest()
 		return func() (*AppendEntriesReply, error) {
@@ -77,12 +76,12 @@ func (n *node) prepareReplicate(followerID int) func() (*AppendEntriesReply, err
 		}
 	}
 
-	// Return a func to send logs
-	maxEntryCount := maxAppendEntriesCount
+	// Pure logs
+	entryCount := maxAppendEntriesCount
 	if !follower.HasMatch() {
-		maxEntryCount = 0
+		entryCount = 0
 	}
-	req := n.createAERequest(follower.nextIndex, maxEntryCount)
+	req := n.createAERequest(follower.nextIndex, entryCount)
 	return func() (*AppendEntriesReply, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
@@ -97,8 +96,11 @@ func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// If there is a higher term, follow and stop processing
 	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
+		return
+	}
+
+	if n.nodeState != NodeStateLeader {
 		return
 	}
 
@@ -110,9 +112,28 @@ func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
 	newCommit := reply.Success && n.leaderCommit()
 
 	// replicate more if there is remaining data, or there is a new commit
+	// Use TryTriggerProcess here which is non blocking to avoid potential deadlock when queue is full
 	if follower.HasMoreToReplicate(n.logMgr.LastIndex()) || newCommit {
-		follower.TriggerReplication()
+		follower.TryTriggerProcess()
 	}
+}
+
+// Execute a cmd and propogate it to followers
+func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	n.mu.Lock()
+	n.logMgr.ProcessCmd(*cmd, n.currentTerm)
+	targetIndex := n.logMgr.LastIndex()
+	n.mu.Unlock()
+
+	// Try to replicate new entry to all followers
+	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
+		p.TriggerProcessTo(targetIndex, wg)
+	})
+
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	success := n.logMgr.CommitIndex() >= targetIndex
+	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
 }
 
 // leaderCommit commits to the last entry with quorum
