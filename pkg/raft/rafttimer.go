@@ -17,10 +17,10 @@ const heartbeatTimeout = time.Duration(heartbeatTimeoutMS) * time.Millisecond
 type IRaftTimer interface {
 	Start()
 	Stop()
-	Refresh(newState NodeState, term int)
+	Reset(newState NodeState, term int)
 }
 
-type resetInfo struct {
+type resetEvt struct {
 	state NodeState
 	term  int
 }
@@ -28,7 +28,7 @@ type resetInfo struct {
 type raftTimer struct {
 	wg       *sync.WaitGroup
 	timer    *time.Timer
-	cterm    chan resetInfo
+	evt      chan resetEvt
 	callback func(state NodeState, term int)
 }
 
@@ -37,7 +37,7 @@ func NewRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
 	rt := &raftTimer{
 		wg:       &sync.WaitGroup{},
 		callback: timerCallback,
-		cterm:    make(chan resetInfo, 100), // use buffered channels so that we don't block sender
+		evt:      make(chan resetEvt, 100), // use buffered channels so that we don't block sender
 	}
 
 	rt.timer = time.NewTimer(rt.getElectionTimeout())
@@ -56,17 +56,16 @@ func (rt *raftTimer) Start() {
 	go rt.eventLoop()
 }
 
-// refreshRaftTimer refreshes the timer based on node state and tries to drain pending timer events if any
-func (rt *raftTimer) Refresh(newState NodeState, term int) {
-	rt.cterm <- resetInfo{state: newState, term: term}
-}
-
 // stopRaftTimer stops the raft timer goroutine
 func (rt *raftTimer) Stop() {
-	close(rt.cterm)
 	util.StopTimer(rt.timer)
 	rt.wg.Wait()
 	rt.timer = nil
+}
+
+// Reset refreshes the timer based on node state and tries to drain pending timer events if any
+func (rt *raftTimer) Reset(newState NodeState, term int) {
+	rt.evt <- resetEvt{state: newState, term: term}
 }
 
 // timer event loop
@@ -76,7 +75,7 @@ func (rt *raftTimer) eventLoop() {
 	stop := false
 	for !stop {
 		select {
-		case info := <-rt.cterm:
+		case info := <-rt.evt:
 			state = info.state
 			term = info.term
 

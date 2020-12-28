@@ -12,16 +12,16 @@ type batcherReq struct {
 // Batcher processes incoming requests while at the same time tries to batch them for better efficency.
 // Each individual request will be processed at most 1 times (0 if the requested target is already batched)
 type Batcher struct {
-	processFn func() int
-	requests  chan batcherReq
-	wg        sync.WaitGroup
+	batchFn  func() int
+	requests chan batcherReq
+	wg       sync.WaitGroup
 }
 
 // NewBatcher creates a new batcher
 func NewBatcher(process func() int, queuesize int) *Batcher {
 	return &Batcher{
-		processFn: process,
-		requests:  make(chan batcherReq, queuesize),
+		batchFn:  process,
+		requests: make(chan batcherReq, queuesize),
 	}
 }
 
@@ -32,8 +32,8 @@ func (b *Batcher) Start() {
 		lastProcessed := -1
 		for r := range b.requests {
 			if r.targetID > lastProcessed {
-				// Try to process only if we haven't processed the current target yet
-				lastProcessed = b.processFn()
+				// invoke new batch operation to see whether we can process up to targetID
+				lastProcessed = b.batchFn()
 			}
 
 			if r.reqwg != nil {
@@ -51,11 +51,11 @@ func (b *Batcher) Stop() {
 	b.wg.Wait()
 }
 
-// TriggerProcessTo triggers a process towards the target id.
-// Batcher signals the caller via the processed channel with:
+// RequestProcessTo requests a process towards the target id.
+// It'll block if current request queue is full.
 // true - if the targetID is processed within one batch after the request has been picked up by the batcher
 // false - otherwise
-func (b *Batcher) TriggerProcessTo(targetID int, wg *sync.WaitGroup) {
+func (b *Batcher) RequestProcessTo(targetID int, wg *sync.WaitGroup) {
 	if targetID < 0 || targetID == targetAny {
 		panic("invalid target index")
 	}
@@ -66,8 +66,9 @@ func (b *Batcher) TriggerProcessTo(targetID int, wg *sync.WaitGroup) {
 	}
 }
 
-// TryTriggerProcess triggers a process, it won't block the caller
-func (b *Batcher) TryTriggerProcess() {
+// RequestProcess request a batch process with no target.
+// It won't block if request queue is full.
+func (b *Batcher) RequestProcess() {
 	select {
 	case b.requests <- batcherReq{targetID: targetAny}:
 	default:
