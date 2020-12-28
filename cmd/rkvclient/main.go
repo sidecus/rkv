@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -23,30 +22,34 @@ const (
 func main() {
 	mode := parseArgs()
 
-	conn, err := grpc.Dial(mode.address, grpc.WithInsecure(), grpc.WithBlock())
+	conn, err := getConnection(mode.address)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	client := pb.NewKVStoreRaftClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-	defer cancel()
-
 	switch mode.name {
 	case getMode:
-		get(ctx, client, &pb.GetRequest{Key: mode.params.(string)})
+		get(conn, &pb.GetRequest{Key: mode.params.(string)})
 	case setMode:
-		set(ctx, client, &pb.SetRequest{Key: mode.params.(keyValuePair).key, Value: mode.params.(keyValuePair).value})
+		set(conn, &pb.SetRequest{Key: mode.params.(keyValuePair).key, Value: mode.params.(keyValuePair).value})
 	case delMode:
-		delete(ctx, client, &pb.DeleteRequest{Key: mode.params.(string)})
+		delete(conn, &pb.DeleteRequest{Key: mode.params.(string)})
 	case benchMarkMode:
-		benchmark(ctx, client, mode.params.(int))
+		benchmark(conn, mode.params.(int))
 	}
 }
 
-func get(ctx context.Context, client pb.KVStoreRaftClient, req *pb.GetRequest) {
+func getConnection(address string) (*grpc.ClientConn, error) {
+	return grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+}
+
+func get(conn *grpc.ClientConn, req *pb.GetRequest) {
+	client := pb.NewKVStoreRaftClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
 	reply, err := client.Get(ctx, req)
 	if err != nil {
 		fmt.Println(err)
@@ -55,7 +58,11 @@ func get(ctx context.Context, client pb.KVStoreRaftClient, req *pb.GetRequest) {
 	fmt.Printf("Node%d - Get Success: %v, Value: %s\n", reply.NodeID, reply.Success, reply.Value)
 }
 
-func set(ctx context.Context, client pb.KVStoreRaftClient, req *pb.SetRequest) {
+func set(conn *grpc.ClientConn, req *pb.SetRequest) {
+	client := pb.NewKVStoreRaftClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
 	reply, err := client.Set(ctx, req)
 	if err != nil {
 		fmt.Println(err)
@@ -64,41 +71,17 @@ func set(ctx context.Context, client pb.KVStoreRaftClient, req *pb.SetRequest) {
 	fmt.Printf("Node%d - Set Success: %v\n", reply.NodeID, reply.Success)
 }
 
-func delete(ctx context.Context, client pb.KVStoreRaftClient, req *pb.DeleteRequest) {
+func delete(conn *grpc.ClientConn, req *pb.DeleteRequest) {
+	client := pb.NewKVStoreRaftClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
 	reply, err := client.Delete(ctx, req)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	fmt.Printf("Node%d - Delete Success: %v\n", reply.NodeID, reply.Success)
-}
-
-func benchmark(ctx context.Context, client pb.KVStoreRaftClient, times int) {
-	if times <= 0 {
-		fmt.Println("times for benchmark mode cannot be 0 or less")
-		os.Exit(1)
-	}
-
-	start := time.Now()
-	successCount := 0
-	var wg sync.WaitGroup
-	for i := 0; i < times; i++ {
-		wg.Add(1)
-		go func(i int) {
-			r, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
-			if err == nil && r.Success {
-				successCount++
-			} else if err != nil {
-				// fmt.Println(err)
-			} else {
-				// fmt.Println("Leader processed but failed to commit in time")
-			}
-			wg.Done()
-		}(i)
-	}
-	wg.Wait()
-	elapsed := time.Now().Sub(start)
-	fmt.Printf("Ran Set for %d times.\nTotal time taken: %d ms\nSuccess count: %d\n", times, elapsed/time.Millisecond, successCount)
 }
 
 type runMode struct {
