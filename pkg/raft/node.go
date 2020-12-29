@@ -275,10 +275,9 @@ func (n *node) RequestVote(ctx context.Context, req *RequestVoteRequest) (*Reque
 }
 
 // onTimer handles a timer event. Action is based on node's current state.
-// This is run on the timer goroutine so we need to lock first
 func (n *node) onTimer(state NodeState, term int) {
-	var fn func()
 	n.mu.RLock()
+	var fn func()
 	if state == n.nodeState && term == n.currentTerm {
 		if n.nodeState == NodeStateLeader {
 			fn = n.sendHeartbeat
@@ -289,6 +288,7 @@ func (n *node) onTimer(state NodeState, term int) {
 	n.mu.RUnlock()
 
 	if fn != nil {
+		// fn needs to be concurrency safe
 		fn()
 	}
 }
