@@ -19,7 +19,7 @@ func benchmark(conn *grpc.ClientConn, times int) {
 		os.Exit(1)
 	}
 
-	fmt.Print("=====================================================\n", clients)
+	fmt.Print("=====================================================\n")
 	fmt.Printf("Benchmark with 1 connection, %d concurrent clients:\n", clients)
 
 	benchmarkSet(conn, times)

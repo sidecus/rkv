@@ -25,10 +25,10 @@ func (n *node) enterLeaderState() {
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
-// send heartbeat, caller should acquire at least reader lock
+// send heartbeat. This is concurrency safe and we don't need locking.
 func (n *node) sendHeartbeat() {
 	for _, p := range n.peerMgr.GetPeers() {
-		p.TryTriggerProcess()
+		p.RequestProcess()
 	}
 
 	// 5.2 - refresh timer
@@ -114,7 +114,7 @@ func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
 	// replicate more if there is remaining data, or there is a new commit
 	// Use TryTriggerProcess here which is non blocking to avoid potential deadlock when queue is full
 	if follower.HasMoreToReplicate(n.logMgr.LastIndex()) || newCommit {
-		follower.TryTriggerProcess()
+		follower.RequestProcess()
 	}
 }
 
@@ -127,7 +127,7 @@ func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*Execut
 
 	// Try to replicate new entry to all followers
 	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
-		p.TriggerProcessTo(targetIndex, wg)
+		p.RequestProcessTo(targetIndex, wg)
 	})
 
 	n.mu.RLock()

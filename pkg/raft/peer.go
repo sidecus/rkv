@@ -16,7 +16,7 @@ type Peer struct {
 	nextIndex  int
 	matchIndex int
 
-	Batcher
+	*Batcher
 	IPeerProxy
 }
 
@@ -26,7 +26,7 @@ func NewPeer(info NodeInfo, replicate func() int, factory IPeerProxyFactory) *Pe
 		NodeInfo:   info,
 		nextIndex:  0,
 		matchIndex: -1,
-		Batcher:    *NewBatcher(replicate, batcherQueueSize),
+		Batcher:    NewBatcher(replicate, batcherQueueSize),
 		IPeerProxy: factory.NewPeerProxy(info),
 	}
 }

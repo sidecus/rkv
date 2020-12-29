@@ -14,7 +14,7 @@ func (t *fakeRaftTimer) Start() {
 }
 func (t *fakeRaftTimer) Stop() {
 }
-func (t *fakeRaftTimer) Refresh(newState NodeState, term int) {
+func (t *fakeRaftTimer) Reset(newState NodeState, term int) {
 	t.state = newState
 	t.term = term
 }

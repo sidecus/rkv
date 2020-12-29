@@ -275,17 +275,21 @@ func (n *node) RequestVote(ctx context.Context, req *RequestVoteRequest) (*Reque
 }
 
 // onTimer handles a timer event. Action is based on node's current state.
-// This is run on the timer goroutine so we need to lock first
 func (n *node) onTimer(state NodeState, term int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+	n.mu.RLock()
+	var fn func()
 	if state == n.nodeState && term == n.currentTerm {
 		if n.nodeState == NodeStateLeader {
-			n.sendHeartbeat()
+			fn = n.sendHeartbeat
 		} else {
-			n.startElection()
+			fn = n.startElection
 		}
+	}
+	n.mu.RUnlock()
+
+	if fn != nil {
+		// fn needs to be concurrency safe
+		fn()
 	}
 }
 
@@ -315,11 +319,29 @@ func (n *node) enterCandidateState() {
 	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
-// start an election, caller should acquire write lock
+// start an election
 func (n *node) startElection() {
-	n.enterCandidateState()
+	elect := n.prepareElection()
+	replies := elect()
+	n.handleRequestVoteReplies(replies)
 
-	// Request vote to all nodes and wait for replies
+	// Check vote result and switch to leader as appropriate
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.wonElection() {
+		n.enterLeaderState()
+		n.sendHeartbeat()
+	}
+}
+
+// prepare election prepares node for election and returns a elect func
+func (n *node) prepareElection() func() <-chan *RequestVoteReply {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.enterCandidateState()
+	n.refreshTimer()
+
 	req := &RequestVoteRequest{
 		Term:         n.currentTerm,
 		CandidateID:  n.nodeID,
@@ -327,34 +349,36 @@ func (n *node) startElection() {
 		LastLogTerm:  n.logMgr.LastTerm(),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
-	defer cancel()
-	rvReplies := n.peerMgr.GoWaitAllPeers(func(peer *Peer) interface{} {
-		reply, err := peer.RequestVote(ctx, req)
-		if err != nil {
-			return nil
-		}
-		util.WriteTrace("T%d: Vote received from Node%d, term:%d\n", n.currentTerm, reply.NodeID, reply.VotedTerm)
-		return reply
-	})
-
-	// reset election timer before processing replies, don't do it after reply processing
-	n.refreshTimer()
-
-	// process replies
-	n.handleRequestVoteReplies(rvReplies)
+	return func() <-chan *RequestVoteReply {
+		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
+		defer cancel()
+		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
+		n.peerMgr.WaitAllPeers(func(peer *Peer, wg *sync.WaitGroup) {
+			go func() {
+				reply, err := peer.RequestVote(ctx, req)
+				if err == nil {
+					util.WriteInfo("T%d: Vote reply from Node%d, granted:%v\n", n.currentTerm, reply.NodeID, reply.VoteGranted)
+					rvReplies <- reply
+				}
+				wg.Done()
+			}()
+		})
+		close(rvReplies)
+		return rvReplies
+	}
 }
 
 // handleRequestVoteReplies processes RV replies
-func (n *node) handleRequestVoteReplies(replies <-chan interface{}) {
-	for v := range replies {
-		reply := v.(*RequestVoteReply)
+func (n *node) handleRequestVoteReplies(replies <-chan *RequestVoteReply) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
+	for reply := range replies {
 		if n.tryFollowNewTerm(reply.NodeID, reply.Term, false) {
 			return // there is a higher term, no need to continue
 		}
 
-		if !reply.VoteGranted {
+		if n.nodeState != NodeStateCandidate || reply.VotedTerm != n.currentTerm || !reply.VoteGranted {
 			// stale vote or denied, ignore
 			util.WriteTrace("T%d: Stale or ungranted vote received from Node%d, term:%d, voteGranted:%t\n", n.currentTerm, reply.NodeID, reply.VotedTerm, reply.VoteGranted)
 			continue
@@ -362,11 +386,6 @@ func (n *node) handleRequestVoteReplies(replies <-chan interface{}) {
 
 		// record and count votes
 		n.votes[reply.NodeID] = true
-	}
-
-	if n.wonElection() {
-		n.enterLeaderState()
-		n.sendHeartbeat()
 	}
 }
 
@@ -430,5 +449,5 @@ func (n *node) setTerm(newTerm int) {
 
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
-	n.timer.Refresh(n.nodeState, n.currentTerm)
+	n.timer.Reset(n.nodeState, n.currentTerm)
 }
