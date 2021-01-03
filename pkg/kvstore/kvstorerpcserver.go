@@ -57,24 +57,31 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 // TODO[sidecus]: This keeps the reading loop out of raft and it has no idea of chunk reception (and hence no response on each chunk).
 // If the snapshot is big it might cause resending from leader
 func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	// create snapshot reader
-	reader, err := newGRPCSnapshotStreamReader(stream)
+	reader, err := raft.NewSnapshotStreamReader(func() (*raft.SnapshotRequest, []byte, error) {
+		var pbReq *pb.SnapshotRequest
+		var err error
+		if pbReq, err = stream.Recv(); err != nil {
+			return nil, nil, err
+		}
+
+		return toRaftSnapshotRequest(pbReq), pbReq.Data, nil
+	})
+
 	if err != nil {
 		return err
 	}
 
 	// Open snapshot file
-	req := reader.req
-	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.Term, req.SnapshotIndex, "remote")
+	req := reader.RequestHeader()
+	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.SnapshotTerm, req.SnapshotIndex, "remote")
 	if err != nil {
 		return err
 	}
+	defer w.Close()
 
 	// Copy to the file
-	defer w.Close()
 	req.File = file
-	_, err = io.Copy(w, reader)
-	if err != nil {
+	if _, err = io.Copy(w, reader); err != nil {
 		return err
 	}
 

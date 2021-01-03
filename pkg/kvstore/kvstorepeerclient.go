@@ -76,9 +76,15 @@ func (proxy *KVPeerClient) InstallSnapshot(ctx context.Context, req *raft.Snapsh
 	if err != nil {
 		return nil, err
 	}
-
 	defer reader.Close()
-	writer := newGRPCSnapshotStreamWriter(req, stream)
+
+	// Create stream writer and copy stream
+	writer := raft.NewSnapshotStreamWriter(req, func(r *raft.SnapshotRequest, data []byte) error {
+		sr := fromRaftSnapshotRequest(r)
+		sr.Data = data
+		return stream.Send(sr)
+	})
+
 	if _, err = io.Copy(writer, reader); err != nil {
 		return nil, err
 	}
@@ -88,8 +94,7 @@ func (proxy *KVPeerClient) InstallSnapshot(ctx context.Context, req *raft.Snapsh
 		return nil, err
 	}
 
-	reply = toRaftAEReply(resp)
-	return reply, nil
+	return toRaftAEReply(resp), nil
 }
 
 // Get gets values from state machine against leader

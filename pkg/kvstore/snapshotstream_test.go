@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
-	"testing"
 	"time"
 
 	"github.com/sidecus/raft/pkg/kvstore/pb"
-	"github.com/sidecus/raft/pkg/raft"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -86,114 +84,4 @@ func (x *mockGRPCStream) Send(req *pb.SnapshotRequest) error {
 }
 func (x *mockGRPCStream) CloseAndRecv() (*pb.AppendEntriesReply, error) {
 	return x.recvMessages[0].(*pb.AppendEntriesReply), nil
-}
-
-func TestGRPCSnapshotStreamReader(t *testing.T) {
-	// Directly return EOF should result in an error
-	stream := &mockGRPCStream{}
-	reader, err := newGRPCSnapshotStreamReader(stream)
-	if err != errorEmptySnapshot || reader != nil {
-		t.Error("reader doesn't return expected error on empty stream")
-	}
-
-	// good flow
-	stream.recvMessages = make([]interface{}, 5)
-	totalExpectedBytes := 0
-	for i := 0; i < len(stream.recvMessages); i++ {
-		size := 10 * i
-		totalExpectedBytes += size
-		stream.recvMessages[i] = &pb.SnapshotRequest{
-			Term:          10,
-			LeaderID:      11,
-			SnapshotIndex: 100,
-			SnapshotTerm:  50,
-			Data:          make([]byte, size),
-		}
-	}
-	reader, err = newGRPCSnapshotStreamReader(stream)
-	if err != nil {
-		t.Error("newGRPCSnapshotStreamReader failed")
-	}
-	if reader.req.Term != 10 || reader.req.LeaderID != 11 || reader.req.SnapshotIndex != 100 || reader.req.SnapshotTerm != 50 {
-		t.Error("Reader didn't read the snapshot header info correctly")
-	}
-
-	totalReadBytes := 0
-	buf := make([]byte, 20)
-	for {
-		n, err := reader.Read(buf)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Error("snapshot stream read error:" + err.Error())
-		}
-		totalReadBytes += n
-	}
-	if totalReadBytes != totalExpectedBytes {
-		t.Error("snapshot stream didn't read correct number of bytes")
-	}
-
-	// error flow
-	stream.recvPtr = 0
-	reader, err = newGRPCSnapshotStreamReader(stream)
-	if err != nil {
-		t.Error("newGRPCSnapshotStreamReader failed")
-	}
-	if reader.req.Term != 10 || reader.req.LeaderID != 11 || reader.req.SnapshotIndex != 100 || reader.req.SnapshotTerm != 50 {
-		t.Error("Reader didn't read the snapshot header info correctly")
-	}
-	stream.recvPtr = len(stream.recvMessages) + 2
-	_, err = reader.Read(buf)
-	if err == nil {
-		t.Error("Reader eats error from RPC stream")
-	}
-}
-
-func TestStreamWriter(t *testing.T) {
-	totalMessages := 5
-
-	stream := &mockGRPCStream{
-		sendMessages: make([]interface{}, totalMessages),
-	}
-
-	// normal scenario
-	payloads := make([][]byte, totalMessages)
-	totalExpectedWritten := 0
-	for i := 0; i < len(payloads); i++ {
-		size := (i + 1) * 3
-		payloads[i] = make([]byte, size)
-		totalExpectedWritten += size
-	}
-	req := &raft.SnapshotRequest{
-		Term:          1,
-		LeaderID:      2,
-		SnapshotTerm:  3,
-		SnapshotIndex: 4,
-	}
-
-	writer := newGRPCSnapshotStreamWriter(req, stream)
-	totalWritten := 0
-	for i := 0; i < len(payloads); i++ {
-		n, err := writer.Write(payloads[i])
-		if err != nil {
-			t.Error("Error writing to stream writer:" + err.Error())
-		}
-		totalWritten += n
-	}
-	for i := 0; i < len(stream.sendMessages); i++ {
-		msgSent := stream.sendMessages[i].(*pb.SnapshotRequest)
-		if msgSent.Term != 1 || msgSent.LeaderID != 2 || msgSent.SnapshotTerm != 3 || msgSent.SnapshotIndex != 4 {
-			t.Error("Wrong message sent")
-		}
-		if len(msgSent.Data) != len(payloads[i]) {
-			t.Error("Wrong payload sent")
-		}
-	}
-
-	// error scenario
-	_, err := writer.Write([]byte{})
-	if err == nil {
-		t.Error("Stream writer eats error from RPC stream")
-	}
 }
