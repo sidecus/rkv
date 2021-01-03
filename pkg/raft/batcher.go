@@ -10,7 +10,8 @@ type batcherReq struct {
 }
 
 // Batcher processes incoming requests while at the same time tries to batch them for better efficency.
-// Each individual request will be processed at most 1 times (0 if the requested target is already batched)
+// For each request, it tries to batch process from current id to target id if it can. Otherwise it fails the calls and
+// relies on future requests to satisfy the target (eventually)
 type Batcher struct {
 	batchFn  func() int
 	requests chan batcherReq
