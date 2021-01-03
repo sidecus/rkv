@@ -5,9 +5,10 @@ import (
 	"sync"
 
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/util"
 )
 
-var errorInvalidPeers = errors.New("peers should contains at least 1 peer to enable a 2 node test cluster")
+var errorInsufficientPeers = errors.New("peers should contains at least 2 peers")
 var errorCurrentNodeInPeers = errors.New("current nodeID should not be part of peers")
 var errorInvalidPeerNodeID = errors.New("node in peers has invalid node IDs")
 
@@ -15,29 +16,27 @@ var errorInvalidPeerNodeID = errors.New("node in peers has invalid node IDs")
 // nodeID: id for current node
 // port: port for current node
 // peers: info for all other nodes
-func StartRaftKVStore(nodeID int, port string, peers map[int]raft.NodeInfo) error {
+func StartRaftKVStore(nodeID int, port string, peers map[int]raft.NodeInfo) {
 	size := len(peers) + 1
-	if size == 1 {
-		return errorInvalidPeers
+	if size < 3 {
+		util.Fatalf("%s\n", errorInsufficientPeers)
 	}
 
 	if err := validateNodeIDs(nodeID, peers); err != nil {
-		return err
+		util.Fatalf("%s\n", errorInsufficientPeers)
 	}
+
+	var wg sync.WaitGroup
 
 	// create components
 	kvStore := NewKVStore()
 	node := raft.NewNode(nodeID, peers, kvStore, KVPeerClientFactory)
-	rpcServer := NewServer(node)
+	rpcServer := NewRKVRPCServer(node, &wg)
 
-	// start rpc server
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// start
 	rpcServer.Start(port)
 	node.Start()
 	wg.Wait()
-
-	return nil
 }
 
 func validateNodeIDs(nodeID int, peers map[int]raft.NodeInfo) error {

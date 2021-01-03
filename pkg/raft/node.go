@@ -83,13 +83,13 @@ type node struct {
 func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
 	size := len(peers) + 1
 	if size < 3 {
-		util.Panicf("To few nodes. Total count: %d", size)
+		util.Fatalf("To few nodes, expecting at least 3. current: %d", size)
 	}
 
 	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		util.Panicf("Failed to get current working directory for snapshot. %s", err)
+		util.Fatalf("Failed to get current working directory for snapshot. %s", err)
 	}
 	SetSnapshotPath(cwd)
 

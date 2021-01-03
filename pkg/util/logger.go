@@ -70,3 +70,8 @@ func Panicf(format string, v ...interface{}) {
 func Panicln(v ...interface{}) {
 	logger.Panicln(v...)
 }
+
+// Fatalf is equivalent to Printf followed by os.Exit(1)
+func Fatalf(format string, v ...interface{}) {
+	logger.Fatalf(format, v...)
+}

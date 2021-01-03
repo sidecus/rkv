@@ -48,11 +48,11 @@ func NewPeerManager(
 	factory IPeerProxyFactory,
 ) IPeerManager {
 	if len(peers) == 0 {
-		util.Panicln(errorNoPeersProvided)
+		util.Fatalf("%s\n", errorNoPeersProvided)
 	}
 
 	if _, ok := peers[nodeID]; ok {
-		util.Panicf("current node %d is listed in peers\n", nodeID)
+		util.Fatalf("current node %d is listed in peers\n", nodeID)
 	}
 
 	mgr := &PeerManager{

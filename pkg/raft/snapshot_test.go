@@ -76,7 +76,7 @@ func TestCreateSnapshot(t *testing.T) {
 		return
 	}
 
-	if !strings.HasSuffix(file, "Node1_20_5_remote.rkvsnapshot") {
+	if !strings.HasSuffix(file, "Node1_T20L5_remote.rkvsnapshot") {
 		t.Error("Wrong snapshot file created")
 	}
 

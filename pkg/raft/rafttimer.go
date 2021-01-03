@@ -48,7 +48,7 @@ func NewRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
 // Start starts the timer with follower state
 func (rt *raftTimer) Start() {
 	if rt.timer == nil {
-		util.Panicln("Timer not initialized")
+		util.Fatalf("Timer not initialized\n")
 	}
 
 	// Start timer event loop
