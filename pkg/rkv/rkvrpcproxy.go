@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 	"github.com/sidecus/raft/pkg/util"
 	"google.golang.org/grpc"
 )

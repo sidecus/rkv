@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"errors"
@@ -12,11 +12,11 @@ var errorInsufficientPeers = errors.New("peers should contains at least 2 peers"
 var errorCurrentNodeInPeers = errors.New("current nodeID should not be part of peers")
 var errorInvalidPeerNodeID = errors.New("node in peers has invalid node IDs")
 
-// StartRaftKVStore starts the raft kv store and waits for it to finish
+// StartRKV starts the raft kv store and waits for it to finish
 // nodeID: id for current node
 // port: port for current node
 // peers: info for all other nodes
-func StartRaftKVStore(nodeID int, port string, peers map[int]raft.NodeInfo) {
+func StartRKV(nodeID int, port string, peers map[int]raft.NodeInfo) {
 	size := len(peers) + 1
 	if size < 3 {
 		util.Fatalf("%s\n", errorInsufficientPeers)

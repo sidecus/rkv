@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 )
 
 // rkvRPCServer is used to implement pb.KVStoreRPCServer

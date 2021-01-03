@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 	"google.golang.org/grpc"
 )
 

@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"encoding/json"

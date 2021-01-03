@@ -1,8 +1,8 @@
-package kvstore
+package rkv
 
 import (
-	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 	"github.com/sidecus/raft/pkg/util"
 )
 
