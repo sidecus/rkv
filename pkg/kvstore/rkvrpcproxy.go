@@ -15,36 +15,38 @@ import (
 var errorInvalidGetRequest = errors.New("Get request doesn't have key")
 var errorInvalidExecuteRequest = errors.New("Execute request is neither Set nor Delete")
 
-// KVPeerClient defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
-type KVPeerClient struct {
-	raft.NodeInfo
-	rpcClient pb.KVStoreRaftClient
+type execFunc func(context.Context, *raft.StateMachineCmd) (*raft.ExecuteReply, error)
+
+// rkvRPCProxy defines the proxy used by kv store, implementing IPeerProxyFactory and IPeerProxy
+type rkvRPCProxy struct {
+	executeMap map[int]execFunc
+	rpcClient  pb.KVStoreRaftClient
 }
 
-// KVPeerClientFactory is the const factory instance
-var KVPeerClientFactory = &KVPeerClient{}
+// rkvProxyFactory is the const factory instance
+var rkvProxyFactory = &rkvRPCProxy{}
 
 // NewPeerProxy factory method to create a new proxy
-func (proxy *KVPeerClient) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
+func (proxy *rkvRPCProxy) NewPeerProxy(info raft.NodeInfo) raft.IPeerProxy {
 	conn, err := grpc.Dial(info.Endpoint, grpc.WithInsecure())
 	if err != nil {
 		// Our RPC connection is nonblocking so should not be expecting an error here
 		util.Panicln(err)
 	}
-
 	client := pb.NewKVStoreRaftClient(conn)
 
-	return &KVPeerClient{
-		NodeInfo: raft.NodeInfo{
-			NodeID:   info.NodeID,
-			Endpoint: info.Endpoint,
-		},
-		rpcClient: client,
+	newProxy := &rkvRPCProxy{
+		executeMap: make(map[int]execFunc, 2),
+		rpcClient:  client,
 	}
+	newProxy.executeMap[KVCmdSet] = newProxy.executeSet
+	newProxy.executeMap[KVCmdDel] = newProxy.executeDelete
+
+	return newProxy
 }
 
 // AppendEntries sends AE request to one single node
-func (proxy *KVPeerClient) AppendEntries(ctx context.Context, req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
+func (proxy *rkvRPCProxy) AppendEntries(ctx context.Context, req *raft.AppendEntriesRequest) (reply *raft.AppendEntriesReply, err error) {
 	var resp *pb.AppendEntriesReply
 	if resp, err = proxy.rpcClient.AppendEntries(ctx, fromRaftAERequest(req)); err == nil {
 		reply = toRaftAEReply(resp)
@@ -54,7 +56,7 @@ func (proxy *KVPeerClient) AppendEntries(ctx context.Context, req *raft.AppendEn
 }
 
 // RequestVote handles raft RPC RV calls to a given node
-func (proxy *KVPeerClient) RequestVote(ctx context.Context, req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
+func (proxy *rkvRPCProxy) RequestVote(ctx context.Context, req *raft.RequestVoteRequest) (reply *raft.RequestVoteReply, err error) {
 	var resp *pb.RequestVoteReply
 	rv := fromRaftRVRequest(req)
 	if resp, err = proxy.rpcClient.RequestVote(ctx, rv); err == nil {
@@ -66,7 +68,7 @@ func (proxy *KVPeerClient) RequestVote(ctx context.Context, req *raft.RequestVot
 
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 // onReply is gauranteed to be called
-func (proxy *KVPeerClient) InstallSnapshot(ctx context.Context, req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
+func (proxy *rkvRPCProxy) InstallSnapshot(ctx context.Context, req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
 	stream, err := proxy.rpcClient.InstallSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -98,7 +100,7 @@ func (proxy *KVPeerClient) InstallSnapshot(ctx context.Context, req *raft.Snapsh
 }
 
 // Get gets values from state machine against leader
-func (proxy *KVPeerClient) Get(ctx context.Context, req *raft.GetRequest) (*raft.GetReply, error) {
+func (proxy *rkvRPCProxy) Get(ctx context.Context, req *raft.GetRequest) (*raft.GetReply, error) {
 	if len(req.Params) != 1 {
 		return nil, errorInvalidGetRequest
 	}
@@ -114,12 +116,8 @@ func (proxy *KVPeerClient) Get(ctx context.Context, req *raft.GetRequest) (*raft
 }
 
 // Execute runs a command via the leader
-func (proxy *KVPeerClient) Execute(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
-	executeMap := make(map[int]func(context.Context, *raft.StateMachineCmd) (*raft.ExecuteReply, error), 2)
-	executeMap[KVCmdSet] = proxy.executeSet
-	executeMap[KVCmdDel] = proxy.executeDelete
-
-	handler, ok := executeMap[cmd.CmdType]
+func (proxy *rkvRPCProxy) Execute(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+	handler, ok := proxy.executeMap[cmd.CmdType]
 	if !ok {
 		return nil, errorInvalidExecuteRequest
 	}
@@ -127,7 +125,7 @@ func (proxy *KVPeerClient) Execute(ctx context.Context, cmd *raft.StateMachineCm
 	return handler(ctx, cmd)
 }
 
-func (proxy *KVPeerClient) executeSet(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+func (proxy *rkvRPCProxy) executeSet(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 	if cmd.CmdType != KVCmdSet {
 		util.Panicln("Wrong cmd passed to executeSet")
 	}
@@ -143,7 +141,7 @@ func (proxy *KVPeerClient) executeSet(ctx context.Context, cmd *raft.StateMachin
 	return toRaftSetReply(resp), nil
 }
 
-func (proxy *KVPeerClient) executeDelete(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
+func (proxy *rkvRPCProxy) executeDelete(ctx context.Context, cmd *raft.StateMachineCmd) (*raft.ExecuteReply, error) {
 	if cmd.CmdType != KVCmdDel {
 		util.Panicln("Wrong cmd passed to executeDelete")
 	}

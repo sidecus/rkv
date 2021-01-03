@@ -29,9 +29,8 @@ func StartRaftKVStore(nodeID int, port string, peers map[int]raft.NodeInfo) {
 	var wg sync.WaitGroup
 
 	// create components
-	kvStore := NewKVStore()
-	node := raft.NewNode(nodeID, peers, kvStore, KVPeerClientFactory)
-	rpcServer := NewRKVRPCServer(node, &wg)
+	node := raft.NewNode(nodeID, peers, newRKVStore(), rkvProxyFactory)
+	rpcServer := newRKVRPCServer(node, &wg)
 
 	// start
 	rpcServer.Start(port)
