@@ -19,8 +19,9 @@ func benchmark(conn *grpc.ClientConn, times int) {
 		os.Exit(1)
 	}
 
-	fmt.Print("=====================================================\n")
-	fmt.Printf("Benchmark with 1 connection, %d concurrent clients:\n", clients)
+	fmt.Print("==================================\n")
+	fmt.Printf("Benchmark with:\n%3d grpc connection\n%3d concurrent clients\n", 1, clients)
+	fmt.Print("==================================\n")
 
 	benchmarkSet(conn, times)
 	benchmarkGet(conn, times)
@@ -60,6 +61,7 @@ func benchmarkGet(conn *grpc.ClientConn, total int) {
 	fmt.Print("GET\n")
 	fmt.Printf("  Total get calls     : %d\n", final.total)
 	fmt.Printf("  Total get success   : %d\n", final.successcnt)
+	fmt.Printf("  Get success rate    : %.2f%%\n", float64(final.successcnt)*100/float64(final.total))
 	fmt.Printf("  Total time taken    : %dms\n", duration/time.Millisecond)
 	fmt.Printf("  Average get latency : %dms\n", final.duration/time.Millisecond/time.Duration(total))
 }
@@ -95,9 +97,9 @@ func benchmarkSet(conn *grpc.ClientConn, total int) {
 	}
 
 	fmt.Print("SET\n")
-	fmt.Printf("  Total set clients   : %d\n", clients)
 	fmt.Printf("  Total set calls     : %d\n", final.total)
 	fmt.Printf("  Total set success   : %d\n", final.successcnt)
+	fmt.Printf("  Set success rate    : %.2f%%\n", float64(final.successcnt)*100/float64(final.total))
 	fmt.Printf("  Total time taken    : %d ms\n", duration/time.Millisecond)
 	fmt.Printf("  Average set latency : %d ms\n", final.duration*1.0/time.Millisecond/time.Duration(final.total))
 }

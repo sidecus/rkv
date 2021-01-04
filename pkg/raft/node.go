@@ -321,21 +321,14 @@ func (n *node) enterCandidateState() {
 
 // start an election
 func (n *node) startElection() {
-	elect := n.prepareElection()
-	replies := elect()
-	n.handleRequestVoteReplies(replies)
+	runCampaign := n.prepareCampaign()
+	votes := runCampaign()
 
-	// Check vote result and switch to leader as appropriate
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.wonElection() {
-		n.enterLeaderState()
-		n.sendHeartbeat()
-	}
+	n.countVotes(votes)
 }
 
 // prepare election prepares node for election and returns a elect func
-func (n *node) prepareElection() func() <-chan *RequestVoteReply {
+func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -368,8 +361,8 @@ func (n *node) prepareElection() func() <-chan *RequestVoteReply {
 	}
 }
 
-// handleRequestVoteReplies processes RV replies
-func (n *node) handleRequestVoteReplies(replies <-chan *RequestVoteReply) {
+// countVotes processes RV replies
+func (n *node) countVotes(replies <-chan *RequestVoteReply) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -386,6 +379,12 @@ func (n *node) handleRequestVoteReplies(replies <-chan *RequestVoteReply) {
 
 		// record and count votes
 		n.votes[reply.NodeID] = true
+	}
+
+	// enter leader state if won
+	if n.wonElection() {
+		n.enterLeaderState()
+		n.sendHeartbeat()
 	}
 }
 
