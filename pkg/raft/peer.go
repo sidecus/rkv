@@ -16,29 +16,47 @@ type Peer struct {
 	IPeerProxy
 }
 
-// NewPeer creats a new peer
-func NewPeer(info NodeInfo, replicate func() int, factory IPeerProxyFactory) *Peer {
-	return &Peer{
-		NodeInfo:        info,
-		nextIndex:       0,
-		matchIndex:      -1,
-		batchReplicator: newBatchReplicator(replicate),
-		IPeerProxy:      factory.NewPeerProxy(info),
+// newPeer creats a new peer
+func newPeer(info NodeInfo, replicate func(*Peer) int, proxy IPeerProxy) *Peer {
+	peer := &Peer{
+		NodeInfo:   info,
+		nextIndex:  0,
+		matchIndex: -1,
+		IPeerProxy: proxy,
 	}
+
+	peer.batchReplicator = newBatchReplicator(func() int { return replicate(peer) })
+	return peer
 }
 
-// HasMatch tells us whether we have found a matching entry for the given follower
-func (p *Peer) HasMatch() bool {
+// hasMatch tells us whether we have found a matching entry for the given follower
+func (p *Peer) hasMatch() bool {
 	return p.matchIndex+1 == p.nextIndex
 }
 
-// HasMoreToReplicate tells us whether there are more to replicate for this follower
-func (p *Peer) HasMoreToReplicate(lastIndex int) bool {
-	return p.matchIndex < lastIndex
+// get next index and entry count for next replication
+func (p *Peer) getReplicationParams() (nextIndex int, entryCount int) {
+	nextIndex = p.nextIndex
+	entryCount = maxAppendEntriesCount
+	if !p.hasMatch() {
+		// no need for any payload if we haven't got a match yet
+		entryCount = 0
+	}
+	return
 }
 
-// UpdateMatchIndex updates match index for a given node
-func (p *Peer) UpdateMatchIndex(match bool, lastMatch int) {
+// should we send a snapshot
+func (p *Peer) shouldSendSnapshot(snapshotIndex int) bool {
+	return p.nextIndex <= snapshotIndex
+}
+
+// upToDate tells us whether follower is up to date with given index
+func (p *Peer) upToDate(lastIndex int) bool {
+	return p.matchIndex >= lastIndex
+}
+
+// updateMatchIndex updates match index for a given node
+func (p *Peer) updateMatchIndex(match bool, lastMatch int) {
 	if match {
 		if p.matchIndex < lastMatch {
 			util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", p.NodeID, lastMatch)

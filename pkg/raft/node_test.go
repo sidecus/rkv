@@ -261,7 +261,7 @@ func TestReplicateData(t *testing.T) {
 	}
 
 	peers := make(map[int]NodeInfo, 1)
-	peers[0] = NodeInfo{NodeID: 1}
+	peers[1] = NodeInfo{NodeID: 1}
 	peerMgr := NewPeerManager(2, peers, nil, &MockPeerFactory{})
 	peer1 := peerMgr.GetPeer(1)
 	proxy1 := peer1.IPeerProxy.(*MockPeerProxy)
@@ -278,7 +278,7 @@ func TestReplicateData(t *testing.T) {
 	// nextIndex is larger than lastIndex, should send empty request
 	peer1.nextIndex = logMgr.lastIndex + 1
 	peer1.matchIndex = 1
-	n.replicateData(1)
+	n.replicateData(peer1)
 	if proxy1.aeReq == nil {
 		t.Error("replicateData should replicate even when nextIndex is higher than lastIndex")
 	}
@@ -294,7 +294,7 @@ func TestReplicateData(t *testing.T) {
 	// nextIndex is smaler than lastIndex
 	peer1.nextIndex = logMgr.lastIndex - 2
 	peer1.matchIndex = 1
-	n.replicateData(1)
+	n.replicateData(peer1)
 	if proxy1.aeReq == nil {
 		t.Error("replicateLogsTo should replicate when nextIndex smaller")
 	}
@@ -312,7 +312,7 @@ func TestReplicateData(t *testing.T) {
 	logMgr.snapshotTerm = 2
 	logMgr.lastSnapshotFile = "snapshot"
 	peer1.nextIndex = 3
-	n.replicateData(1)
+	n.replicateData(peer1)
 	if proxy1.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't (or replicated more than once)")
 	}
@@ -329,7 +329,7 @@ func TestReplicateData(t *testing.T) {
 	logMgr.lastSnapshotFile = "snapshotsmaller"
 	logMgr.lastIndex = logMgr.snapshotIndex + len(logMgr.logs)
 	peer1.nextIndex = 4
-	n.replicateData(1)
+	n.replicateData(peer1)
 	if proxy1.isReq == nil {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}
@@ -352,5 +352,4 @@ func TestWonElection(t *testing.T) {
 	if !n.wonElection() {
 		t.Error("wonElection should return true on 2 votes out of 3")
 	}
-
 }

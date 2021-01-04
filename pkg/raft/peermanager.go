@@ -44,7 +44,7 @@ type PeerManager struct {
 func NewPeerManager(
 	nodeID int,
 	peers map[int]NodeInfo,
-	replicate func(followerID int) int,
+	replicate func(*Peer) int,
 	factory IPeerProxyFactory,
 ) IPeerManager {
 	if len(peers) == 0 {
@@ -59,13 +59,11 @@ func NewPeerManager(
 		Peers: make(map[int]*Peer),
 	}
 
-	for _, info := range peers {
-		peerID := info.NodeID
-		mgr.Peers[peerID] = NewPeer(
-			info,
-			func() int { return replicate(peerID) },
-			factory,
-		)
+	for peerID, info := range peers {
+		if peerID != info.NodeID {
+			util.Fatalf("peer %d has different id set in NodeInfo %d", peerID, info.NodeID)
+		}
+		mgr.Peers[peerID] = newPeer(info, replicate, factory.NewPeerProxy(info))
 	}
 
 	return mgr
@@ -114,14 +112,14 @@ func (mgr *PeerManager) QuorumReached(logIndex int) bool {
 // Start starts a replication goroutine for each follower
 func (mgr *PeerManager) Start() {
 	for _, p := range mgr.Peers {
-		p.Start()
+		p.start()
 	}
 }
 
 // Stop stops the replication goroutines
 func (mgr *PeerManager) Stop() {
 	for _, p := range mgr.Peers {
-		p.Stop()
+		p.stop()
 	}
 }
 

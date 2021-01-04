@@ -60,7 +60,7 @@ func createTestPeerInfo(n int) map[int]NodeInfo {
 }
 
 func createTestPeerManager(size int) IPeerManager {
-	replicateFunc := func(x int) int { return x }
+	replicateFunc := func(p *Peer) int { return 3 }
 	peers := createTestPeerInfo(size)
 	peerMgr := NewPeerManager(size, peers, replicateFunc, &MockPeerFactory{})
 

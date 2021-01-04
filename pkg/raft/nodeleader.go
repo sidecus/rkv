@@ -28,7 +28,7 @@ func (n *node) enterLeaderState() {
 // send heartbeat. This is non blocking and concurrency safe and we don't need locking.
 func (n *node) sendHeartbeat() {
 	for _, p := range n.peerMgr.GetPeers() {
-		p.TryRequestReplicate()
+		p.tryRequestReplicate()
 	}
 
 	// 5.2 - refresh timer
@@ -38,84 +38,89 @@ func (n *node) sendHeartbeat() {
 // replicateData replicates data to follower. It replicates snapshot or next batch of logs to the follower.
 // If nothing more to replicate, it'll send message with empty payload.
 // This is called in the replication goroutine for each follower
-func (n *node) replicateData(followerID int) int {
-	replicate := n.prepareReplication(followerID)
-	if reply, err := replicate(); err != nil {
-		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, followerID, err)
-	} else {
-		n.handleReplicationReply(reply)
+func (n *node) replicateData(follower *Peer) int {
+	doReplicate := n.prepareReplication(follower)
+	reply, err := doReplicate()
+
+	if err != nil {
+		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, follower.NodeID, err)
+		reply = nil
 	}
 
-	return n.peerMgr.GetPeer(followerID).matchIndex
+	return n.processReplicationResult(follower, reply)
 }
 
 // prepareReplication prepares replication for the given node.
 // We need reader lock on node
-func (n *node) prepareReplication(followerID int) func() (*AppendEntriesReply, error) {
+func (n *node) prepareReplication(follower *Peer) func() (*AppendEntriesReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
 	if n.nodeState != NodeStateLeader {
-		return func() (*AppendEntriesReply, error) {
-			return nil, errNoLongerLeader
-		}
+		return func() (*AppendEntriesReply, error) { return nil, errNoLongerLeader }
 	}
 
-	follower := n.peerMgr.GetPeer(followerID)
 	currentTerm := n.currentTerm
-	snapshotIndex := n.logMgr.SnapshotIndex()
 
 	// Snapshot scenario
-	if follower.nextIndex <= snapshotIndex {
+	if follower.shouldSendSnapshot(n.logMgr.SnapshotIndex()) {
 		req := n.createSnapshotRequest()
 		return func() (*AppendEntriesReply, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcSnapshotTimeout)
 			defer cancel()
-			util.WriteTrace("T%d: Sending snapshot to Node%d (L%d)\n", currentTerm, follower.NodeID, snapshotIndex)
+
+			util.WriteTrace("T%d: Sending snapshot to Node%d (T%dL%d)\n", currentTerm, follower.NodeID, req.SnapshotTerm, req.SnapshotIndex)
 			return follower.InstallSnapshot(ctx, req)
 		}
 	}
 
 	// Pure logs
-	entryCount := maxAppendEntriesCount
-	if !follower.HasMatch() {
-		entryCount = 0
-	}
-	req := n.createAERequest(follower.nextIndex, entryCount)
+	nextIndex, entryCount := follower.getReplicationParams()
+	req := n.createAERequest(nextIndex, entryCount)
 	return func() (*AppendEntriesReply, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
-		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
+
+		util.WriteVerbose("T%d: Sending AE request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
 		return follower.AppendEntries(ctx, req)
 	}
 }
 
-// handleReplicationReply handles append entries reply for replications.
-// Need writer lock
-func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
+// processReplicationResult handles append entries reply for replications.
+// returns lastMatchIndex, or -1 if there is any "error"
+func (n *node) processReplicationResult(follower *Peer, reply *AppendEntriesReply) int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if reply == nil {
+		return follower.matchIndex
+	}
+
+	if follower.NodeID != reply.NodeID {
+		util.Panicf("AE reply has different node id %d, expected %d", reply.NodeID, follower.NodeID)
+	}
+
 	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
-		return
+		return -1
 	}
 
 	if n.nodeState != NodeStateLeader {
-		return
+		return -1
 	}
 
-	follower := n.peerMgr.GetPeer(reply.NodeID)
-
 	// 5.3 update follower indicies based on reply and last match index info from the reply
+	follower.updateMatchIndex(reply.Success, reply.LastMatch)
+
 	// Then check whether there are logs to commit
-	follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
 	newCommit := reply.Success && n.leaderCommit()
 
 	// request more replication if there is new commit or data remaining
-	// Use TryRequestReplicate here which is non blocking to avoid potential deadlock when queue is full
-	if newCommit || follower.HasMoreToReplicate(n.logMgr.LastIndex()) {
-		follower.TryRequestReplicate()
+	if newCommit || !follower.upToDate(n.logMgr.LastIndex()) {
+		// Use non blocking TryRequestReplicate to avoid potential deadlock when queue is full
+		follower.tryRequestReplicate()
 	}
+
+	return follower.matchIndex
 }
 
 // Execute a cmd and propogate it to followers
@@ -127,7 +132,7 @@ func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*Execut
 
 	// Try to replicate new entry to all followers
 	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
-		p.RequestReplicateTo(targetIndex, wg)
+		p.requestReplicateTo(targetIndex, wg)
 	})
 
 	n.mu.RLock()

@@ -1,6 +1,10 @@
 package raft
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/sidecus/raft/pkg/util"
+)
 
 const targetAny = int(^uint(0) >> 1)
 
@@ -29,8 +33,8 @@ func newBatchReplicator(replicate func() int) *batchReplicator {
 	}
 }
 
-// Start starts the batcher service
-func (b *batchReplicator) Start() {
+// start starts the batchReplicator
+func (b *batchReplicator) start() {
 	b.wg.Add(1)
 	go func() {
 		lastMatch := -1
@@ -49,19 +53,19 @@ func (b *batchReplicator) Start() {
 	}()
 }
 
-// Stop stops the batcher and wait for finish
-func (b *batchReplicator) Stop() {
+// stop stops the batcher and wait for finish
+func (b *batchReplicator) stop() {
 	close(b.requests)
 	b.wg.Wait()
 }
 
-// RequestReplicateTo requests a process towards the target id.
+// requestReplicateTo requests a process towards the target id.
 // It'll block if current request queue is full.
 // true - if the targetID is processed within one batch after the request has been picked up by the batcher
 // false - otherwise
-func (b *batchReplicator) RequestReplicateTo(targetID int, wg *sync.WaitGroup) {
+func (b *batchReplicator) requestReplicateTo(targetID int, wg *sync.WaitGroup) {
 	if targetID < 0 || targetID == targetAny {
-		panic("invalid target index")
+		util.Panicln("invalid target index")
 	}
 
 	b.requests <- replicationReq{
@@ -70,9 +74,9 @@ func (b *batchReplicator) RequestReplicateTo(targetID int, wg *sync.WaitGroup) {
 	}
 }
 
-// TryRequestReplicate request a batch process with no target.
+// tryRequestReplicate request a batch process with no target.
 // It won't block if request queue is full.
-func (b *batchReplicator) TryRequestReplicate() {
+func (b *batchReplicator) tryRequestReplicate() {
 	select {
 	case b.requests <- replicationReq{targetID: targetAny}:
 	default:

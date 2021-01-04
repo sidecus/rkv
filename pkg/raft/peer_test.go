@@ -14,14 +14,14 @@ func TestUpdateMatchIndex(t *testing.T) {
 	// has new match
 	follower0.nextIndex = 5
 	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(true, 2)
+	follower0.updateMatchIndex(true, 2)
 	if follower0.nextIndex != 5 || follower0.matchIndex != 3 {
 		t.Error("updateMatchIndex should ignore stale matches")
 	}
 
 	follower0.nextIndex = 5
 	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(true, 6)
+	follower0.updateMatchIndex(true, 6)
 	if follower0.nextIndex != 7 || follower0.matchIndex != 6 {
 		t.Error("updateMatchIndex fails with successful match on 6")
 	}
@@ -29,14 +29,14 @@ func TestUpdateMatchIndex(t *testing.T) {
 	// no match
 	follower0.nextIndex = 8
 	follower0.matchIndex = 3
-	follower0.UpdateMatchIndex(false, -2)
+	follower0.updateMatchIndex(false, -2)
 	if follower0.nextIndex != util.Max(0, 8-nextIndexFallbackStep) || follower0.matchIndex != -1 {
 		t.Error("updateMatchIndex doesn't decrease nextIndex correctly or set match index to -1 upon failed match")
 	}
 
 	follower0.nextIndex = 0
 	follower0.matchIndex = -1
-	follower0.UpdateMatchIndex(false, -2)
+	follower0.updateMatchIndex(false, -2)
 	if follower0.nextIndex != 0 || follower0.matchIndex != -1 {
 		t.Error("updateMatchIndex unnecessarily decrease nextIndex when it's already 0 upon failure")
 	}
