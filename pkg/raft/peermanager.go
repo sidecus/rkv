@@ -24,12 +24,12 @@ type IPeerProxyFactory interface {
 
 // IPeerManager defines raft peer manager interface.
 type IPeerManager interface {
-	GetPeers() map[int]*Peer
 	GetPeer(nodeID int) *Peer
-	WaitAllPeers(action func(*Peer, *sync.WaitGroup))
+	WaitAll(action func(*Peer, *sync.WaitGroup))
 
 	ResetFollowerIndicies(lastLogIndex int)
 	QuorumReached(logIndex int) bool
+	TriggerHeartbeats()
 
 	Start()
 	Stop()
@@ -79,16 +79,10 @@ func (mgr *PeerManager) GetPeer(nodeID int) *Peer {
 	return peer
 }
 
-// GetPeers returns all the peers
-func (mgr *PeerManager) GetPeers() map[int]*Peer {
-	return mgr.Peers
-}
-
 // ResetFollowerIndicies resets all follower's indices based on lastLogIndex
 func (mgr *PeerManager) ResetFollowerIndicies(lastLogIndex int) {
 	for _, p := range mgr.Peers {
-		p.nextIndex = lastLogIndex + 1
-		p.matchIndex = -1
+		p.resetFollowerIndex(lastLogIndex)
 	}
 }
 
@@ -98,7 +92,7 @@ func (mgr *PeerManager) QuorumReached(logIndex int) bool {
 	matchCnt := 1
 	quorum := (len(mgr.Peers) + 1) / 2
 	for _, p := range mgr.Peers {
-		if p.matchIndex >= logIndex {
+		if p.hasConsensus(logIndex) {
 			matchCnt++
 			if matchCnt > quorum {
 				return true
@@ -107,6 +101,13 @@ func (mgr *PeerManager) QuorumReached(logIndex int) bool {
 	}
 
 	return false
+}
+
+// TriggerHeartbeats trigger heart beat for each peer
+func (mgr *PeerManager) TriggerHeartbeats() {
+	for _, p := range mgr.Peers {
+		p.tryRequestReplicate(nil)
+	}
 }
 
 // Start starts a replication goroutine for each follower
@@ -123,14 +124,11 @@ func (mgr *PeerManager) Stop() {
 	}
 }
 
-// WaitAllPeers executes an action against each peer and wait for all to finish
-func (mgr *PeerManager) WaitAllPeers(action func(*Peer, *sync.WaitGroup)) {
-	peers := mgr.GetPeers()
-	count := len(peers)
-
+// WaitAll executes an action against each peer and wait for all to finish
+func (mgr *PeerManager) WaitAll(action func(*Peer, *sync.WaitGroup)) {
 	var wg sync.WaitGroup
-	wg.Add(count)
-	for _, p := range peers {
+	for _, p := range mgr.Peers {
+		wg.Add(1)
 		action(p, &wg)
 	}
 	wg.Wait()

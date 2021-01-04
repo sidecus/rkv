@@ -30,9 +30,7 @@ func (n *node) enterLeaderState() {
 
 // send heartbeat. This is non blocking and concurrency safe and we don't need locking.
 func (n *node) sendHeartbeat() {
-	for _, p := range n.peerMgr.GetPeers() {
-		p.tryRequestReplicate(nil)
-	}
+	n.peerMgr.TriggerHeartbeats()
 
 	// 5.2 - refresh timer
 	n.refreshTimer()
@@ -134,7 +132,7 @@ func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*Execut
 	n.mu.Unlock()
 
 	// Try to replicate new entry to all followers
-	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
+	n.peerMgr.WaitAll(func(p *Peer, wg *sync.WaitGroup) {
 		p.requestReplicateTo(targetIndex, wg)
 	})
 

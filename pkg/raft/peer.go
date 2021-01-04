@@ -55,6 +55,17 @@ func (p *Peer) upToDate(lastIndex int) bool {
 	return p.matchIndex >= lastIndex
 }
 
+// hasConsensus checks whether current peer has consensus upon the given log index
+func (p *Peer) hasConsensus(logIndex int) bool {
+	return p.matchIndex >= logIndex
+}
+
+// reset follower index based on last index
+func (p *Peer) resetFollowerIndex(lastLogIndex int) {
+	p.nextIndex = lastLogIndex + 1
+	p.matchIndex = -1
+}
+
 // updateMatchIndex updates match index for a given node
 func (p *Peer) updateMatchIndex(match bool, lastMatch int) {
 	if match {

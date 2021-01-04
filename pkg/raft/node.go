@@ -139,23 +139,21 @@ func (n *node) Stop() {
 }
 
 // Get gets values from state machine, no need to proxy
-func (n *node) Get(ctx context.Context, req *GetRequest) (*GetReply, error) {
-	// We don't need lock on the node since we are only accessing its logMgr property which never changes after startup.
-	// However, this means the downstream component (statemachine) must implement proper locking. Our KVStore for exmaple, does it.
-	// n.mu.RLock()
-	// defer n.mu.RUnlock()
+func (n *node) Get(ctx context.Context, req *GetRequest) (result *GetReply, err error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
-	var result *GetReply = nil
-
-	ret, err := n.logMgr.Get(req.Params...)
-	if err == nil {
-		result = &GetReply{
-			NodeID: n.nodeID,
-			Data:   ret,
-		}
+	var ret interface{}
+	if ret, err = n.logMgr.Get(req.Params...); err != nil {
+		return
 	}
 
-	return result, err
+	result = &GetReply{
+		NodeID: n.nodeID,
+		Data:   ret,
+	}
+
+	return
 }
 
 // Execute runs a command via the raft node
@@ -216,7 +214,6 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
 
 	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
-
 	success := false
 	lastMatchIndex := req.SnapshotIndex
 	if req.Term >= n.currentTerm {
@@ -350,7 +347,7 @@ func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
 		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
-		n.peerMgr.WaitAllPeers(func(peer *Peer, wg *sync.WaitGroup) {
+		n.peerMgr.WaitAll(func(peer *Peer, wg *sync.WaitGroup) {
 			go func() {
 				reply, err := peer.RequestVote(ctx, req)
 				if err == nil {

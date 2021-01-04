@@ -40,7 +40,7 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votedFor")
 	}
 
-	if len(n.peerMgr.GetPeers()) != peerCount {
+	if len(n.peerMgr.(*PeerManager).Peers) != peerCount {
 		t.Error("Node created with invalid number of followers")
 	}
 
