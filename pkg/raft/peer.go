@@ -6,28 +6,24 @@ import (
 
 const nextIndexFallbackStep = 20
 
-// Set batcher queue size to be the same as max entries per request
-// Batcher queue size also controls our max Execute request concurrency
-const batcherQueueSize = maxAppendEntriesCount
-
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
 	NodeInfo
 	nextIndex  int
 	matchIndex int
 
-	*Batcher
+	*batchReplicator
 	IPeerProxy
 }
 
 // NewPeer creats a new peer
 func NewPeer(info NodeInfo, replicate func() int, factory IPeerProxyFactory) *Peer {
 	return &Peer{
-		NodeInfo:   info,
-		nextIndex:  0,
-		matchIndex: -1,
-		Batcher:    NewBatcher(replicate, batcherQueueSize),
-		IPeerProxy: factory.NewPeerProxy(info),
+		NodeInfo:        info,
+		nextIndex:       0,
+		matchIndex:      -1,
+		batchReplicator: newBatchReplicator(replicate),
+		IPeerProxy:      factory.NewPeerProxy(info),
 	}
 }
 

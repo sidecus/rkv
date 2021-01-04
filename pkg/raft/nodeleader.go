@@ -28,7 +28,7 @@ func (n *node) enterLeaderState() {
 // send heartbeat. This is concurrency safe and we don't need locking.
 func (n *node) sendHeartbeat() {
 	for _, p := range n.peerMgr.GetPeers() {
-		p.RequestProcess()
+		p.TryRequestReplicate()
 	}
 
 	// 5.2 - refresh timer
@@ -114,7 +114,7 @@ func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
 	// replicate more if there is remaining data, or there is a new commit
 	// Use TryTriggerProcess here which is non blocking to avoid potential deadlock when queue is full
 	if follower.HasMoreToReplicate(n.logMgr.LastIndex()) || newCommit {
-		follower.RequestProcess()
+		follower.TryRequestReplicate()
 	}
 }
 
@@ -127,7 +127,7 @@ func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*Execut
 
 	// Try to replicate new entry to all followers
 	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
-		p.RequestProcessTo(targetIndex, wg)
+		p.RequestReplicateTo(targetIndex, wg)
 	})
 
 	n.mu.RLock()
