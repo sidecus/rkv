@@ -72,11 +72,13 @@ func TestNodeSetTerm(t *testing.T) {
 }
 
 func TestEnterFollowerState(t *testing.T) {
+	timer := &fakeRaftTimer{}
 	n := &node{
 		nodeState:     NodeStateLeader,
 		currentTerm:   0,
 		currentLeader: 0,
 		votedFor:      0,
+		timer:         timer,
 	}
 
 	n.enterFollowerState(1, 1)
@@ -93,15 +95,20 @@ func TestEnterFollowerState(t *testing.T) {
 	if n.votedFor != -1 {
 		t.Error("enterFollowerState didn't reset votedFor on new term")
 	}
+	if timer.state != NodeStateFollower || timer.term != 1 {
+		t.Error("enterFollowerrState didn't reset timer")
+	}
 }
 
 func TestEnterCandidateState(t *testing.T) {
+	timer := &fakeRaftTimer{}
 	n := &node{
 		nodeID:        100,
 		nodeState:     NodeStateLeader,
 		currentTerm:   0,
 		currentLeader: 0,
 		votedFor:      0,
+		timer:         timer,
 	}
 
 	n.enterCandidateState()
@@ -121,15 +128,20 @@ func TestEnterCandidateState(t *testing.T) {
 	if len(n.votes) != 1 || !n.votes[100] {
 		t.Error("enterCandidateState didn't reset other votes")
 	}
+	if timer.state != NodeStateCandidate || timer.term != n.currentTerm {
+		t.Error("enterCandidateState didn't reset timer")
+	}
 }
 
 func TestEnterLeaderState(t *testing.T) {
+	timer := &fakeRaftTimer{}
 	n := &node{
 		nodeID:        100,
 		nodeState:     NodeStateCandidate,
 		currentTerm:   50,
 		currentLeader: -1,
 		peerMgr:       createTestPeerManager(2),
+		timer:         timer,
 		logMgr: &LogManager{
 			lastIndex: 3,
 		},
@@ -158,6 +170,9 @@ func TestEnterLeaderState(t *testing.T) {
 	}
 	if follower0.matchIndex != -1 || follower1.matchIndex != -1 {
 		t.Error("enterLeaderState didn't reset matchIndex for peers")
+	}
+	if timer.state != NodeStateLeader || timer.term != 50 {
+		t.Error("enterLeaderState didn't reset timer")
 	}
 }
 

@@ -122,12 +122,11 @@ func (n *node) Start() {
 	defer n.mu.Unlock()
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
-
-	// Enter follower state
 	n.timer.Start()
 	n.peerMgr.Start()
+
+	// Enter follower state
 	n.enterFollowerState(n.nodeID, 0)
-	n.refreshTimer()
 }
 
 // Stop stops a node
@@ -227,11 +226,10 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 		} else {
 			// only process logs when term is valid
 			util.WriteInfo("T%d: Node%d installing T%dL%d snapshot from Node%d\n", n.currentTerm, n.nodeID, req.SnapshotTerm, req.SnapshotIndex, req.LeaderID)
-			err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
-			if err == nil {
-				success = true
-			} else {
+			if err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm); err != nil {
 				util.WriteError("T%d: Install snapshot failed. %s\n", n.currentTerm, err)
+			} else {
+				success = true
 			}
 		}
 	}
@@ -294,11 +292,15 @@ func (n *node) onTimer(state NodeState, term int) {
 }
 
 // enter follower state and follows new leader (or potential leader)
+// also resets vote timer
 func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	oldLeader := n.currentLeader
 	n.nodeState = NodeStateFollower
 	n.currentLeader = sourceNodeID
 	n.setTerm(newTerm)
+
+	// refresh timer
+	n.refreshTimer()
 
 	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
 		util.WriteInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
@@ -315,6 +317,9 @@ func (n *node) enterCandidateState() {
 	n.votedFor = n.nodeID
 	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
+
+	// reset timer
+	n.refreshTimer()
 
 	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
@@ -333,7 +338,6 @@ func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 	defer n.mu.Unlock()
 
 	n.enterCandidateState()
-	n.refreshTimer()
 
 	req := &RequestVoteRequest{
 		Term:         n.currentTerm,
@@ -384,7 +388,6 @@ func (n *node) countVotes(replies <-chan *RequestVoteReply) {
 	// enter leader state if won
 	if n.wonElection() {
 		n.enterLeaderState()
-		n.sendHeartbeat()
 	}
 }
 
@@ -404,7 +407,6 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 
 	if follow {
 		n.enterFollowerState(sourceNodeID, newTerm)
-		n.refreshTimer()
 	}
 
 	return follow

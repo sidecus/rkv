@@ -51,6 +51,7 @@ type SnapshotStreamReader struct {
 }
 
 // NewSnapshotStreamReader creates a new SnapshotStreamReader
+// TODO[sidecus] - we should invoke the node to reset vote timer for each message received instead of waiting till snapshot streaming finishes
 func NewSnapshotStreamReader(recv recvFunc) (*SnapshotStreamReader, error) {
 	// Do the first read to get snapshotTerm and snapshotIndex
 	req, data, err := recv()

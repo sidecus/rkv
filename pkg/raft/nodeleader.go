@@ -22,6 +22,9 @@ func (n *node) enterLeaderState() {
 	// reset all follower's indicies
 	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
 
+	// send heartbeat (which also resets timer)
+	n.sendHeartbeat()
+
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
