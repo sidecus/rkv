@@ -28,7 +28,7 @@ func (n *node) enterLeaderState() {
 // send heartbeat. This is non blocking and concurrency safe and we don't need locking.
 func (n *node) sendHeartbeat() {
 	for _, p := range n.peerMgr.GetPeers() {
-		p.tryRequestReplicate()
+		p.tryRequestReplicate(nil)
 	}
 
 	// 5.2 - refresh timer
@@ -117,7 +117,7 @@ func (n *node) processReplicationResult(follower *Peer, reply *AppendEntriesRepl
 	// request more replication if there is new commit or data remaining
 	if newCommit || !follower.upToDate(n.logMgr.LastIndex()) {
 		// Use non blocking TryRequestReplicate to avoid potential deadlock when queue is full
-		follower.tryRequestReplicate()
+		follower.tryRequestReplicate(nil)
 	}
 
 	return follower.matchIndex

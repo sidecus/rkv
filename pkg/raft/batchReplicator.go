@@ -75,10 +75,10 @@ func (b *batchReplicator) requestReplicateTo(targetID int, wg *sync.WaitGroup) {
 }
 
 // tryRequestReplicate request a batch process with no target.
-// It won't block if request queue is full.
-func (b *batchReplicator) tryRequestReplicate() {
+// It won't block if request queue is full. wg is optional
+func (b *batchReplicator) tryRequestReplicate(wg *sync.WaitGroup) {
 	select {
-	case b.requests <- replicationReq{targetID: targetAny}:
+	case b.requests <- replicationReq{targetID: targetAny, reqwg: wg}:
 	default:
 	}
 }
