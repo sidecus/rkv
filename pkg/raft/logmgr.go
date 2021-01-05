@@ -21,37 +21,31 @@ type ILogManager interface {
 	SnapshotIndex() int
 	SnapshotTerm() int
 	SnapshotFile() string
+
 	GetLogEntry(index int) LogEntry
 	GetLogEntries(start int, end int) (entries []LogEntry, prevIndex int, prevTerm int)
-
 	ProcessCmd(cmd StateMachineCmd, term int) int
 	ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEntry) (prevMatch bool)
 	CommitAndApply(targetIndex int) (newCommit bool, newSnapshot bool)
 	InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error
 
-	// proxy to state machine
+	// proxy to state machine Get
 	IValueGetter
 }
 
 // logManager manages logs and the statemachine, implements ILogManager
 type logManager struct {
-	nodeID      int
-	lastIndex   int
-	lastTerm    int
-	commitIndex int
-
-	// snap shot related
+	nodeID           int
+	lastIndex        int
+	lastTerm         int
+	commitIndex      int
 	snapshotIndex    int
 	snapshotTerm     int
 	lastSnapshotFile string
+	lastApplied      int
+	logs             []LogEntry
 
-	// logs should be read from persistent storage upon init
-	// it contains entries from snapshotIndex+1 to lastIndex
-	logs []LogEntry
-
-	// reference to statemachien for commit operations
-	lastApplied  int
-	statemachine IStateMachine
+	IStateMachine
 }
 
 // newLogMgr creates a new logmgr
@@ -69,7 +63,7 @@ func newLogMgr(nodeID int, sm IStateMachine) ILogManager {
 		snapshotTerm:  -1,
 		lastApplied:   -1,
 		logs:          make([]LogEntry, 0, 100),
-		statemachine:  sm,
+		IStateMachine: sm,
 	}
 
 	return lm
@@ -138,11 +132,6 @@ func (lm *logManager) GetLogEntries(start int, end int) (entries []LogEntry, pre
 	return
 }
 
-// Get gets values from the underneath statemachine
-func (lm *logManager) Get(param ...interface{}) (interface{}, error) {
-	return lm.statemachine.Get(param...)
-}
-
 // ProcessCmd adds a cmd for the given term to the logs
 // this should be called by leader when accepting client requests
 func (lm *logManager) ProcessCmd(cmd StateMachineCmd, term int) int {
@@ -196,7 +185,8 @@ func (lm *logManager) CommitAndApply(targetIndex int) (newCommit bool, newSnapsh
 	lm.commitIndex = targetIndex
 	if lm.commitIndex > lm.lastApplied {
 		for i := lm.lastApplied + 1; i <= lm.commitIndex; i++ {
-			lm.statemachine.Apply(lm.GetLogEntry(i).Cmd)
+			// Apply to statemachine
+			lm.Apply(lm.GetLogEntry(i).Cmd)
 		}
 		lm.lastApplied = lm.commitIndex
 	}
@@ -227,9 +217,10 @@ func (lm *logManager) TakeSnapshot() error {
 	if err != nil {
 		return err
 	}
-
 	defer w.Close()
-	lm.statemachine.Serialize(w)
+
+	// Invoke statemachine serialization
+	lm.Serialize(w)
 
 	// Truncate logs and update snapshotIndex and term
 	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
@@ -248,9 +239,10 @@ func (lm *logManager) InstallSnapshot(snapshotFile string, snapshotIndex int, sn
 	if err != nil {
 		return err
 	}
-
 	defer r.Close()
-	lm.statemachine.Deserialize(r)
+
+	// Invoke statemachine deserialization
+	lm.Deserialize(r)
 
 	lm.snapshotIndex = snapshotIndex
 	lm.snapshotTerm = snapshotTerm
