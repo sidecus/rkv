@@ -42,7 +42,7 @@ type peerManager struct {
 // newPeerManager creates the node proxy for kv store
 func newPeerManager(peers map[int]NodeInfo, replicate func(*Peer) int, proxyFactory IPeerProxyFactory) IPeerManager {
 	if len(peers) == 0 {
-		util.Fatalf("%s\n", errorNoPeersProvided)
+		util.Panicf("%s\n", errorNoPeersProvided)
 	}
 
 	mgr := &peerManager{
@@ -51,7 +51,7 @@ func newPeerManager(peers map[int]NodeInfo, replicate func(*Peer) int, proxyFact
 
 	for peerID, info := range peers {
 		if peerID != info.NodeID {
-			util.Fatalf("peer %d has different id set in NodeInfo %d", peerID, info.NodeID)
+			util.Panicf("peer %d has different id set in NodeInfo %d\n", peerID, info.NodeID)
 		}
 
 		peer := &Peer{

@@ -9,7 +9,9 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var errorInsufficientPeers = errors.New("At least 2 peers required to make a 3 node cluster")
+var errorCurrentNodeInPeers = errors.New("current node should not exist as one of its peers")
+var errorInvalidPeerNodeID = errors.New("peer node has invalid node ID")
 var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // NodeState is the state of the node
@@ -78,11 +80,11 @@ type node struct {
 }
 
 // NewNode creates a new node
-func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
-	size := len(peers) + 1
-	if size < 3 {
-		util.Fatalf("To few nodes, expecting at least 3. current: %d", size)
+func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) (INode, error) {
+	if err := validateCluster(nodeID, peers); err != nil {
+		return nil, err
 	}
+	size := len(peers) + 1
 
 	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
 	cwd, err := os.Getwd()
@@ -106,7 +108,24 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 	n.timer = newRaftTimer(n.onTimer)
 	n.peerMgr = newPeerManager(peers, n.replicateData, proxyFactory)
 
-	return n
+	return n, nil
+}
+
+// validate cluster params
+func validateCluster(nodeID int, peers map[int]NodeInfo) error {
+	if len(peers) < 2 {
+		return errorInsufficientPeers
+	}
+
+	for i, p := range peers {
+		if p.NodeID == nodeID {
+			return errorCurrentNodeInPeers
+		} else if p.NodeID != i {
+			return errorInvalidPeerNodeID
+		}
+	}
+
+	return nil
 }
 
 // NodeID gets the node's id

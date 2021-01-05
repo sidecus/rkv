@@ -3,7 +3,6 @@ package rkv
 import (
 	"context"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/sidecus/raft/pkg/raft"
 	"github.com/sidecus/raft/pkg/rkv/pb"
+	"github.com/sidecus/raft/pkg/util"
 )
 
 // rkvRPCServer is used to implement pb.KVStoreRPCServer
@@ -149,9 +149,9 @@ func (s *rkvRPCServer) Start(port string) {
 	s.wg.Add(1)
 	go func() {
 		if lis, err := net.Listen("tcp", ":"+port); err != nil {
-			log.Fatalf("Cannot listen on port %s. Error:%s", port, err)
+			util.Fatalf("Cannot listen on port %s. Error:%s", port, err)
 		} else if err := s.server.Serve(lis); err != nil {
-			log.Fatalf("Failed to server %ss", err)
+			util.Fatalf("Failed to server %ss", err)
 		}
 
 		s.wg.Done()

@@ -14,7 +14,11 @@ func TestNewNode(t *testing.T) {
 	peerCount := 2
 	nodeID := peerCount // last node
 	peers := createTestPeerInfo(peerCount)
-	n := NewNode(nodeID, peers, &testStateMachine{}, &MockPeerFactory{}).(*node)
+	ret, err := NewNode(nodeID, peers, &testStateMachine{}, &MockPeerFactory{})
+	if err != nil {
+		t.Error(err)
+	}
+	n := ret.(*node)
 
 	if n.nodeID != nodeID {
 		t.Error("Node created with invalid node ID")
