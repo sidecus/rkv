@@ -40,7 +40,7 @@ func TestNewNode(t *testing.T) {
 		t.Error("Node created with invalid votedFor")
 	}
 
-	if len(n.peerMgr.(*PeerManager).Peers) != peerCount {
+	if len(n.peerMgr.(*peerManager).peers) != peerCount {
 		t.Error("Node created with invalid number of followers")
 	}
 
@@ -142,15 +142,15 @@ func TestEnterLeaderState(t *testing.T) {
 		currentLeader: -1,
 		peerMgr:       createTestPeerManager(2),
 		timer:         timer,
-		logMgr: &LogManager{
+		logMgr: &logManager{
 			lastIndex: 3,
 		},
 	}
 
-	follower0 := n.peerMgr.GetPeer(0)
+	follower0 := n.peerMgr.getPeer(0)
 	follower0.nextIndex = 30
 	follower0.matchIndex = 20
-	follower1 := n.peerMgr.GetPeer(1)
+	follower1 := n.peerMgr.getPeer(1)
 	follower1.nextIndex = 100
 	follower1.matchIndex = 70
 
@@ -225,12 +225,12 @@ func TestLeaderCommit(t *testing.T) {
 		lastApplied: -111,
 	}
 	peerMgr := createTestPeerManager(2)
-	logMgr := NewLogMgr(100, sm).(*LogManager)
+	logMgr := newLogMgr(100, sm).(*logManager)
 
-	peerMgr.GetPeer(0).nextIndex = 2
-	peerMgr.GetPeer(0).matchIndex = 1
-	peerMgr.GetPeer(1).nextIndex = 3
-	peerMgr.GetPeer(1).matchIndex = 1
+	peerMgr.getPeer(0).nextIndex = 2
+	peerMgr.getPeer(0).matchIndex = 1
+	peerMgr.getPeer(1).nextIndex = 3
+	peerMgr.getPeer(1).matchIndex = 1
 
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
@@ -241,7 +241,7 @@ func TestLeaderCommit(t *testing.T) {
 
 	n := &node{
 		clusterSize: 3,
-		currentTerm: 3,
+		currentTerm: 5,
 		logMgr:      logMgr,
 		peerMgr:     peerMgr,
 	}
@@ -255,19 +255,20 @@ func TestLeaderCommit(t *testing.T) {
 		t.Error("leaderCommit shall not trigger apply of entires from previous term")
 	}
 
-	// We only have a majority match on 2nd entry in the same term
-	peerMgr.GetPeer(1).matchIndex = 2
+	// We only have a majority match on 5th entry in the same term
+	expectedCommit := 4
+	peerMgr.getPeer(1).matchIndex = expectedCommit
 	n.leaderCommit()
-	if logMgr.commitIndex != 2 {
+	if logMgr.commitIndex != expectedCommit {
 		t.Error("leaderCommit shall commit to the right entry")
 	}
-	if logMgr.lastApplied != 2 || sm.lastApplied != 20 {
+	if logMgr.lastApplied != expectedCommit || sm.lastApplied != logMgr.logs[expectedCommit].Cmd.Data {
 		t.Error("leaderCommit trigger apply to the right entry")
 	}
 }
 
 func TestReplicateData(t *testing.T) {
-	logMgr := NewLogMgr(100, &testStateMachine{lastApplied: -111}).(*LogManager)
+	logMgr := newLogMgr(100, &testStateMachine{lastApplied: -111}).(*logManager)
 	for i := 0; i < 5; i++ {
 		logMgr.ProcessCmd(StateMachineCmd{
 			CmdType: 1,
@@ -277,15 +278,15 @@ func TestReplicateData(t *testing.T) {
 
 	peers := make(map[int]NodeInfo, 1)
 	peers[1] = NodeInfo{NodeID: 1}
-	peerMgr := NewPeerManager(2, peers, nil, &MockPeerFactory{})
-	peer1 := peerMgr.GetPeer(1)
+	peerMgr := newPeerManager(peers, nil, &MockPeerFactory{})
+	peer1 := peerMgr.getPeer(1)
 	proxy1 := peer1.IPeerProxy.(*MockPeerProxy)
 
 	n := &node{
 		nodeID:      2,
 		nodeState:   NodeStateLeader,
 		clusterSize: 3,
-		currentTerm: 3,
+		currentTerm: 5,
 		logMgr:      logMgr,
 		peerMgr:     peerMgr,
 	}

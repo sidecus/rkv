@@ -24,54 +24,52 @@ type IPeerProxyFactory interface {
 
 // IPeerManager defines raft peer manager interface.
 type IPeerManager interface {
-	GetPeer(nodeID int) *Peer
-	WaitAll(action func(*Peer, *sync.WaitGroup))
+	getPeer(nodeID int) *Peer
+	waitAll(action func(*Peer, *sync.WaitGroup))
+	resetFollowerIndicies(lastLogIndex int)
+	quorumReached(logIndex int) bool
+	tryReplicateAll()
 
-	ResetFollowerIndicies(lastLogIndex int)
-	QuorumReached(logIndex int) bool
-	TriggerHeartbeats()
-
-	Start()
-	Stop()
+	start()
+	stop()
 }
 
-// PeerManager manages communication with peers
-type PeerManager struct {
-	Peers map[int]*Peer
+// peerManager manages communication with peers
+type peerManager struct {
+	peers map[int]*Peer
 }
 
-// NewPeerManager creates the node proxy for kv store
-func NewPeerManager(
-	nodeID int,
-	peers map[int]NodeInfo,
-	replicate func(*Peer) int,
-	factory IPeerProxyFactory,
-) IPeerManager {
+// newPeerManager creates the node proxy for kv store
+func newPeerManager(peers map[int]NodeInfo, replicate func(*Peer) int, proxyFactory IPeerProxyFactory) IPeerManager {
 	if len(peers) == 0 {
 		util.Fatalf("%s\n", errorNoPeersProvided)
 	}
 
-	if _, ok := peers[nodeID]; ok {
-		util.Fatalf("current node %d is listed in peers\n", nodeID)
-	}
-
-	mgr := &PeerManager{
-		Peers: make(map[int]*Peer),
+	mgr := &peerManager{
+		peers: make(map[int]*Peer),
 	}
 
 	for peerID, info := range peers {
 		if peerID != info.NodeID {
 			util.Fatalf("peer %d has different id set in NodeInfo %d", peerID, info.NodeID)
 		}
-		mgr.Peers[peerID] = newPeer(info, replicate, factory.NewPeerProxy(info))
+
+		peer := &Peer{
+			NodeInfo:   info,
+			nextIndex:  0,
+			matchIndex: -1,
+		}
+		peer.IPeerProxy = proxyFactory.NewPeerProxy(info)
+		peer.batchReplicator = newBatchReplicator(func() int { return replicate(peer) })
+		mgr.peers[peerID] = peer
 	}
 
 	return mgr
 }
 
 // GetPeer gets the peer for a given node id
-func (mgr *PeerManager) GetPeer(nodeID int) *Peer {
-	peer, ok := mgr.Peers[nodeID]
+func (mgr *peerManager) getPeer(nodeID int) *Peer {
+	peer, ok := mgr.peers[nodeID]
 	if !ok {
 		util.Panicln(errorInvalidNodeID)
 	}
@@ -79,19 +77,29 @@ func (mgr *PeerManager) GetPeer(nodeID int) *Peer {
 	return peer
 }
 
-// ResetFollowerIndicies resets all follower's indices based on lastLogIndex
-func (mgr *PeerManager) ResetFollowerIndicies(lastLogIndex int) {
-	for _, p := range mgr.Peers {
+// WaitAll executes an action against each peer and wait for all to finish
+func (mgr *peerManager) waitAll(action func(*Peer, *sync.WaitGroup)) {
+	var wg sync.WaitGroup
+	for _, p := range mgr.peers {
+		wg.Add(1)
+		action(p, &wg)
+	}
+	wg.Wait()
+}
+
+// resetFollowerIndicies resets all follower's indices based on lastLogIndex
+func (mgr *peerManager) resetFollowerIndicies(lastLogIndex int) {
+	for _, p := range mgr.peers {
 		p.resetFollowerIndex(lastLogIndex)
 	}
 }
 
-// QuorumReached tells whether we have majority of the followers match the given logIndex
-func (mgr *PeerManager) QuorumReached(logIndex int) bool {
+// quorumReached tells whether we have majority of the followers match the given logIndex
+func (mgr *peerManager) quorumReached(logIndex int) bool {
 	// both match count and majority should include the leader itself, which is not part of the peerManager
 	matchCnt := 1
-	quorum := (len(mgr.Peers) + 1) / 2
-	for _, p := range mgr.Peers {
+	quorum := (len(mgr.peers) + 1) / 2
+	for _, p := range mgr.peers {
 		if p.hasConsensus(logIndex) {
 			matchCnt++
 			if matchCnt > quorum {
@@ -103,33 +111,23 @@ func (mgr *PeerManager) QuorumReached(logIndex int) bool {
 	return false
 }
 
-// TriggerHeartbeats trigger heart beat for each peer
-func (mgr *PeerManager) TriggerHeartbeats() {
-	for _, p := range mgr.Peers {
+// tryReplicateAll tries to request replication to all peers
+func (mgr *peerManager) tryReplicateAll() {
+	for _, p := range mgr.peers {
 		p.tryRequestReplicate(nil)
 	}
 }
 
 // Start starts a replication goroutine for each follower
-func (mgr *PeerManager) Start() {
-	for _, p := range mgr.Peers {
+func (mgr *peerManager) start() {
+	for _, p := range mgr.peers {
 		p.start()
 	}
 }
 
 // Stop stops the replication goroutines
-func (mgr *PeerManager) Stop() {
-	for _, p := range mgr.Peers {
+func (mgr *peerManager) stop() {
+	for _, p := range mgr.peers {
 		p.stop()
 	}
-}
-
-// WaitAll executes an action against each peer and wait for all to finish
-func (mgr *PeerManager) WaitAll(action func(*Peer, *sync.WaitGroup)) {
-	var wg sync.WaitGroup
-	for _, p := range mgr.Peers {
-		wg.Add(1)
-		action(p, &wg)
-	}
-	wg.Wait()
 }

@@ -7,9 +7,9 @@ import (
 )
 
 func TestUpdateMatchIndex(t *testing.T) {
-	mgr := createTestPeerManager(3).(*PeerManager)
+	mgr := createTestPeerManager(3).(*peerManager)
 
-	follower0 := mgr.GetPeer(0)
+	follower0 := mgr.getPeer(0)
 
 	// has new match
 	follower0.nextIndex = 5

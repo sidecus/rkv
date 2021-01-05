@@ -20,7 +20,7 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
+	n.peerMgr.resetFollowerIndicies(n.logMgr.LastIndex())
 
 	// send heartbeat (which also resets timer)
 	n.sendHeartbeat()
@@ -28,17 +28,18 @@ func (n *node) enterLeaderState() {
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
-// send heartbeat. This is non blocking and concurrency safe and we don't need locking.
+// send heartbeat. This is non blocking
 func (n *node) sendHeartbeat() {
-	n.peerMgr.TriggerHeartbeats()
-
-	// 5.2 - refresh timer
+	n.peerMgr.tryReplicateAll()
 	n.refreshTimer()
 }
 
 // replicateData replicates data to follower. It replicates snapshot or next batch of logs to the follower.
 // If nothing more to replicate, it'll send message with empty payload.
-// This is called in the replication goroutine for each follower
+// This is called in the replication goroutine for each follower, and can be triggered via three cases:
+// 1. heartbeat
+// 2. leader execute propogating entries
+// 3. backfilling follower
 func (n *node) replicateData(follower *Peer) int {
 	doReplicate := n.prepareReplication(follower)
 	reply, err := doReplicate()
@@ -52,7 +53,6 @@ func (n *node) replicateData(follower *Peer) int {
 }
 
 // prepareReplication prepares replication for the given node.
-// We need reader lock on node
 func (n *node) prepareReplication(follower *Peer) func() (*AppendEntriesReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -124,24 +124,6 @@ func (n *node) processReplicationResult(follower *Peer, reply *AppendEntriesRepl
 	return follower.matchIndex
 }
 
-// Execute a cmd and propogate it to followers
-func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
-	n.mu.Lock()
-	n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-	targetIndex := n.logMgr.LastIndex()
-	n.mu.Unlock()
-
-	// Try to replicate new entry to all followers
-	n.peerMgr.WaitAll(func(p *Peer, wg *sync.WaitGroup) {
-		p.requestReplicateTo(targetIndex, wg)
-	})
-
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	success := n.logMgr.CommitIndex() >= targetIndex
-	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
-}
-
 // leaderCommit commits to the last entry with quorum
 // This should only be called by leader upon AE reply handling
 // Returns true if anything is committed
@@ -155,12 +137,12 @@ func (n *node) leaderCommit() bool {
 			// A leader shall only commit entries added by itself, and term is the indication of ownership
 			break
 		} else if entry.Term > n.currentTerm {
-			// This will never happen, adding for safety purpose
+			util.Panicln("entry term is larger than leader's current term")
 			continue
 		}
 
 		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.peerMgr.QuorumReached(i) {
+		if n.peerMgr.quorumReached(i) {
 			commitIndex = i
 			break
 		}
@@ -173,6 +155,22 @@ func (n *node) leaderCommit() bool {
 	}
 
 	return false
+}
+
+// Execute a cmd and propogate it to followers.
+// This will trigger replicateData for all followers and wait for them to finish
+func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	n.mu.Lock()
+	targetIndex := n.logMgr.ProcessCmd(*cmd, n.currentTerm)
+	n.mu.Unlock()
+
+	// Try to replicate new entry to all followers
+	n.peerMgr.waitAll(func(p *Peer, wg *sync.WaitGroup) {
+		p.requestReplicateTo(targetIndex, wg)
+	})
+
+	success := n.logMgr.CommitIndex() >= targetIndex
+	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
 }
 
 // createAERequest creates an AppendEntriesRequest with proper log payload

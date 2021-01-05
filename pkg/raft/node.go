@@ -9,8 +9,6 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const maxAppendEntriesCount = 50
-
 // errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
 var errorNoLeaderAvailable = errors.New("No leader currently available")
 
@@ -102,11 +100,11 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		currentLeader: -1,
 		votedFor:      -1,
 		votes:         make(map[int]bool, size),
-		logMgr:        NewLogMgr(nodeID, sm),
+		logMgr:        newLogMgr(nodeID, sm),
 	}
 
-	n.timer = NewRaftTimer(n.onTimer)
-	n.peerMgr = NewPeerManager(nodeID, peers, n.replicateData, proxyFactory)
+	n.timer = newRaftTimer(n.onTimer)
+	n.peerMgr = newPeerManager(peers, n.replicateData, proxyFactory)
 
 	return n
 }
@@ -122,8 +120,8 @@ func (n *node) Start() {
 	defer n.mu.Unlock()
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
-	n.timer.Start()
-	n.peerMgr.Start()
+	n.timer.start()
+	n.peerMgr.start()
 
 	// Enter follower state
 	n.enterFollowerState(n.nodeID, 0)
@@ -134,8 +132,8 @@ func (n *node) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	n.timer.Stop()
-	n.peerMgr.Stop()
+	n.timer.stop()
+	n.peerMgr.stop()
 }
 
 // Get gets values from state machine, no need to proxy
@@ -165,16 +163,17 @@ func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply
 	leader := n.currentLeader
 	n.mu.RUnlock()
 
-	if state != NodeStateLeader {
-		// We are not the leader, proxy to leader if we know who it is, or return error
-		// otherwise we might have a deadlock between this and the leader when processing AppendEntries
-		if leader == -1 {
-			return nil, errorNoLeaderAvailable
-		}
-		return n.peerMgr.GetPeer(leader).Execute(ctx, cmd)
+	switch {
+	case leader == -1:
+		// no leader available now, error out
+		return nil, errorNoLeaderAvailable
+	case state != NodeStateLeader:
+		// We are not the leader, proxy to leader
+		return n.peerMgr.getPeer(leader).Execute(ctx, cmd)
+	default:
+		// we are the leader
+		return n.leaderExecute(ctx, cmd)
 	}
-
-	return n.leaderExecute(ctx, cmd)
 }
 
 // AppendEntries handles raft RPC AE calls
@@ -325,7 +324,6 @@ func (n *node) enterCandidateState() {
 func (n *node) startElection() {
 	runCampaign := n.prepareCampaign()
 	votes := runCampaign()
-
 	n.countVotes(votes)
 }
 
@@ -343,21 +341,26 @@ func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 		LastLogTerm:  n.logMgr.LastTerm(),
 	}
 
+	currentTerm := n.currentTerm
+
 	return func() <-chan *RequestVoteReply {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
+
 		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
-		n.peerMgr.WaitAll(func(peer *Peer, wg *sync.WaitGroup) {
+		defer close(rvReplies)
+
+		n.peerMgr.waitAll(func(peer *Peer, wg *sync.WaitGroup) {
 			go func() {
 				reply, err := peer.RequestVote(ctx, req)
 				if err == nil {
-					util.WriteInfo("T%d: Vote reply from Node%d, granted:%v\n", n.currentTerm, reply.NodeID, reply.VoteGranted)
+					util.WriteInfo("T%d: Vote reply from Node%d, granted:%v\n", currentTerm, reply.NodeID, reply.VoteGranted)
 					rvReplies <- reply
 				}
 				wg.Done()
 			}()
 		})
-		close(rvReplies)
+
 		return rvReplies
 	}
 }
@@ -398,7 +401,7 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 		util.WriteInfo("T%d: Received new term from Node%d, newTerm:%d.\n", n.currentTerm, sourceNodeID, newTerm)
 		follow = true
 	} else if newTerm == n.currentTerm && isAppendEntries {
-		// For AE calls, we should follow even term is the same
+		// For AE calls, we should (re)follow when term is the same
 		follow = true
 	}
 
@@ -447,5 +450,5 @@ func (n *node) setTerm(newTerm int) {
 
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
-	n.timer.Reset(n.nodeState, n.currentTerm)
+	n.timer.reset(n.nodeState, n.currentTerm)
 }

@@ -5,6 +5,7 @@ import (
 )
 
 const nextIndexFallbackStep = 20
+const maxAppendEntriesCount = 50
 
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
@@ -14,19 +15,6 @@ type Peer struct {
 
 	*batchReplicator
 	IPeerProxy
-}
-
-// newPeer creats a new peer
-func newPeer(info NodeInfo, replicate func(*Peer) int, proxy IPeerProxy) *Peer {
-	peer := &Peer{
-		NodeInfo:   info,
-		nextIndex:  0,
-		matchIndex: -1,
-		IPeerProxy: proxy,
-	}
-
-	peer.batchReplicator = newBatchReplicator(func() int { return replicate(peer) })
-	return peer
 }
 
 // hasMatch tells us whether we have found a matching entry for the given follower

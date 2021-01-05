@@ -10,11 +10,11 @@ type fakeRaftTimer struct {
 	term  int
 }
 
-func (t *fakeRaftTimer) Start() {
+func (t *fakeRaftTimer) start() {
 }
-func (t *fakeRaftTimer) Stop() {
+func (t *fakeRaftTimer) stop() {
 }
-func (t *fakeRaftTimer) Reset(newState NodeState, term int) {
+func (t *fakeRaftTimer) reset(newState NodeState, term int) {
 	t.state = newState
 	t.term = term
 }

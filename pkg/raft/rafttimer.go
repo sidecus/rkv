@@ -15,9 +15,9 @@ const heartbeatTimeout = time.Duration(heartbeatTimeoutMS) * time.Millisecond
 
 // IRaftTimer defines the raft timer interface
 type IRaftTimer interface {
-	Start()
-	Stop()
-	Reset(newState NodeState, term int)
+	start()
+	stop()
+	reset(newState NodeState, term int)
 }
 
 type resetEvt struct {
@@ -26,16 +26,15 @@ type resetEvt struct {
 }
 
 type raftTimer struct {
-	wg       *sync.WaitGroup
+	wg       sync.WaitGroup
 	timer    *time.Timer
 	evt      chan resetEvt
 	callback func(state NodeState, term int)
 }
 
-// NewRaftTimer creates a new raft timer
-func NewRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
+// newRaftTimer creates a new raft timer
+func newRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
 	rt := &raftTimer{
-		wg:       &sync.WaitGroup{},
 		callback: timerCallback,
 		evt:      make(chan resetEvt, 100), // use buffered channels so that we don't block sender
 	}
@@ -45,8 +44,8 @@ func NewRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
 	return rt
 }
 
-// Start starts the timer with follower state
-func (rt *raftTimer) Start() {
+// start starts the timer with follower state
+func (rt *raftTimer) start() {
 	if rt.timer == nil {
 		util.Fatalf("Timer not initialized\n")
 	}
@@ -57,14 +56,14 @@ func (rt *raftTimer) Start() {
 }
 
 // stopRaftTimer stops the raft timer goroutine
-func (rt *raftTimer) Stop() {
+func (rt *raftTimer) stop() {
 	util.StopTimer(rt.timer)
 	rt.wg.Wait()
 	rt.timer = nil
 }
 
 // Reset refreshes the timer based on node state and tries to drain pending timer events if any
-func (rt *raftTimer) Reset(newState NodeState, term int) {
+func (rt *raftTimer) reset(newState NodeState, term int) {
 	rt.evt <- resetEvt{state: newState, term: term}
 }
 
