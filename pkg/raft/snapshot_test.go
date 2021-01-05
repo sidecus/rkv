@@ -133,9 +133,14 @@ func setSnapshotPathToTempDir() string {
 }
 
 func TestGRPCSnapshotStreamReader(t *testing.T) {
+	var sr *SnapshotRequest
+	partCallback := func(part *SnapshotRequest) bool {
+		sr = part
+		return true
+	}
 	// Directly return EOF should result in an error
-	reader, err := NewSnapshotStreamReader(func() (*SnapshotRequest, []byte, error) { return nil, nil, io.EOF })
-	if err != errorEmptySnapshot || reader != nil {
+	reader, err := NewSnapshotStreamReader(func() (*SnapshotRequest, []byte, error) { return nil, nil, io.EOF }, partCallback)
+	if err != errorEmptySnapshot || reader != nil || sr != nil {
 		t.Error("reader doesn't return expected error on empty stream")
 	}
 
@@ -155,10 +160,8 @@ func TestGRPCSnapshotStreamReader(t *testing.T) {
 		totalExpectedBytes += size
 		data[i] = make([]byte, size)
 	}
-
-	// good flow
 	curMsg := 0
-	reader, err = NewSnapshotStreamReader(func() (*SnapshotRequest, []byte, error) {
+	recvFunc := func() (*SnapshotRequest, []byte, error) {
 		if curMsg == len(messages) {
 			return nil, nil, io.EOF
 		} else if curMsg > len(messages) {
@@ -169,14 +172,16 @@ func TestGRPCSnapshotStreamReader(t *testing.T) {
 		p := data[curMsg]
 		curMsg++
 		return msg, p, nil
-	})
+	}
+
+	// good flow
+	reader, err = NewSnapshotStreamReader(recvFunc, partCallback)
 	if err != nil {
 		t.Error("SnapshotStreamReader failed")
 	}
 	if reader.req.Term != 10 || reader.req.LeaderID != 11 || reader.req.SnapshotIndex != 100 || reader.req.SnapshotTerm != 50 {
 		t.Error("Reader didn't read the snapshot header info correctly")
 	}
-
 	totalReadBytes := 0
 	buf := make([]byte, 20)
 	for {
@@ -187,17 +192,28 @@ func TestGRPCSnapshotStreamReader(t *testing.T) {
 		if err != nil {
 			t.Error("snapshot stream read error:" + err.Error())
 		}
+		if sr.LeaderID != messages[0].LeaderID || sr.Term != messages[0].Term ||
+			sr.SnapshotIndex != messages[0].SnapshotIndex || sr.SnapshotTerm != messages[0].SnapshotTerm {
+			t.Error("Reader didn't invoke callback correctly")
+		}
 		totalReadBytes += n
 	}
 	if totalReadBytes != totalExpectedBytes {
 		t.Error("snapshot stream didn't read correct number of bytes")
 	}
 
-	// error flow
-	curMsg = 0
+	// error flow - returns error when recvFunc fails
 	curMsg = len(messages) + 1
 	if _, err = reader.Read(buf); err == nil {
 		t.Error("Reader eats error from RPC stream")
+	}
+
+	// error flow - returns error when partCallback returns false (mimicing part has lower term scenario)
+	curMsg = 0
+	errCallback := func(*SnapshotRequest) bool { return curMsg <= 1 }
+	reader, _ = NewSnapshotStreamReader(recvFunc, errCallback)
+	if _, err = reader.Read(buf); err == nil {
+		t.Error("Reader should return error if partCallback returns false")
 	}
 }
 

@@ -8,9 +8,9 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const minElectionTimeoutMS = 150
-const maxElectionTimeoutMS = 300
-const heartbeatTimeoutMS = 100
+const minElectionTimeoutMS = 300
+const maxElectionTimeoutMS = 600
+const heartbeatTimeoutMS = 150
 const heartbeatTimeout = time.Duration(heartbeatTimeoutMS) * time.Millisecond
 
 // IRaftTimer defines the raft timer interface

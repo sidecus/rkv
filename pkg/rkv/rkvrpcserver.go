@@ -54,11 +54,9 @@ func (s *rkvRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteReque
 	return fromRaftRVReply(resp), nil
 }
 
-// InstallSnapshot installs snapshot on current node
-// TODO[sidecus]: This keeps the reading loop out of raft and it has no idea of chunk reception (and hence no response on each chunk).
-// If the snapshot is big it might cause resending from leader
+// InstallSnapshot receives and installs snapshot on current node
 func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	reader, err := raft.NewSnapshotStreamReader(func() (*raft.SnapshotRequest, []byte, error) {
+	recvFunc := func() (*raft.SnapshotRequest, []byte, error) {
 		var pbReq *pb.SnapshotRequest
 		var err error
 		if pbReq, err = stream.Recv(); err != nil {
@@ -66,22 +64,23 @@ func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServ
 		}
 
 		return toRaftSnapshotRequest(pbReq), pbReq.Data, nil
-	})
+	}
 
+	reader, err := raft.NewSnapshotStreamReader(recvFunc, s.node.OnSnapshotPart)
 	if err != nil {
 		return err
 	}
 
-	// Open snapshot file
+	// Create snapshot file
 	req := reader.RequestHeader()
 	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.SnapshotTerm, req.SnapshotIndex, "remote")
 	if err != nil {
 		return err
 	}
+	req.File = file
 	defer w.Close()
 
 	// Copy to the file
-	req.File = file
 	if _, err = io.Copy(w, reader); err != nil {
 		return err
 	}
@@ -91,6 +90,7 @@ func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServ
 	var reply *raft.AppendEntriesReply
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(500)*time.Millisecond)
 	defer cancel()
+
 	if reply, err = s.node.InstallSnapshot(ctx, req); err != nil {
 		return err
 	}

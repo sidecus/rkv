@@ -15,6 +15,7 @@ const snapshotChunkSize = 8 * 1024
 var snapshotPath string
 var errorInvalidSnapshotInfo = errors.New("Invalid snapshot index/term")
 var errorEmptySnapshot = errors.New("empty snapshot received")
+var errorSnapshotFromStaleLeader = errors.New("snapshot received from a stale leader")
 
 // SetSnapshotPath set the snapshot saving path
 func SetSnapshotPath(path string) {
@@ -41,18 +42,19 @@ func CreateSnapshot(nodeID int, term int, index int, suffix string) (file string
 
 type recvFunc func() (*SnapshotRequest, []byte, error)
 type sendFunc func(*SnapshotRequest, []byte) error
+type partCallback func(part *SnapshotRequest) bool
 
 // SnapshotStreamReader implements reader interface for reading snapshot messages
 type SnapshotStreamReader struct {
 	req     *SnapshotRequest
 	recv    recvFunc
+	partcb  partCallback
 	buf     []byte
 	readPtr int
 }
 
 // NewSnapshotStreamReader creates a new SnapshotStreamReader
-// TODO[sidecus] - we should invoke the node to reset vote timer for each message received instead of waiting till snapshot streaming finishes
-func NewSnapshotStreamReader(recv recvFunc) (*SnapshotStreamReader, error) {
+func NewSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStreamReader, error) {
 	// Do the first read to get snapshotTerm and snapshotIndex
 	req, data, err := recv()
 	if err == io.EOF {
@@ -62,10 +64,15 @@ func NewSnapshotStreamReader(recv recvFunc) (*SnapshotStreamReader, error) {
 		return nil, err
 	}
 
+	if !partcb(req) {
+		return nil, errorSnapshotFromStaleLeader
+	}
+
 	return &SnapshotStreamReader{
-		req:  req,
-		recv: recv,
-		buf:  data,
+		req:    req,
+		recv:   recv,
+		partcb: partcb,
+		buf:    data,
 	}, nil
 }
 
@@ -85,6 +92,10 @@ func (reader *SnapshotStreamReader) Read(p []byte) (n int, err error) {
 
 		if req.SnapshotTerm != reader.req.SnapshotTerm || req.SnapshotIndex != reader.req.SnapshotIndex {
 			util.Panicln("snapshot stream message has different headers than former")
+		}
+
+		if !reader.partcb(req) {
+			return 0, errorSnapshotFromStaleLeader
 		}
 
 		reader.buf = data

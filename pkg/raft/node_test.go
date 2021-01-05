@@ -224,6 +224,60 @@ func TestTryFollowNewTerm(t *testing.T) {
 	}
 }
 
+func TestOnSnapshotPart(t *testing.T) {
+	fakeTimer := &fakeRaftTimer{state: -1}
+	n := &node{
+		nodeState: NodeStateLeader,
+		timer:     fakeTimer,
+	}
+
+	part := &SnapshotRequest{}
+
+	// same term
+	part.LeaderID = 3
+	part.Term = 0
+	if !n.OnSnapshotPart(part) {
+		t.Error("onSnapshotPart returns false when it should accept the part")
+	}
+	if n.currentTerm != part.Term || n.currentLeader != part.LeaderID {
+		t.Error("onSnapshotPart didn't follow node on same term")
+	}
+	if fakeTimer.state != NodeStateFollower || fakeTimer.term != part.Term {
+		t.Error("onSnapshotPart didn't reset timer")
+	}
+
+	// higher term
+	n.nodeState = NodeStateLeader
+	part.LeaderID = 4
+	part.Term = 1
+	if !n.OnSnapshotPart(part) {
+		t.Error("onSnapshotPart returns false when it should accept the part")
+	}
+	if n.currentTerm != part.Term || n.currentLeader != part.LeaderID {
+		t.Error("onSnapshotPart didn't follow node on same term")
+	}
+	if fakeTimer.state != NodeStateFollower || fakeTimer.term != part.Term {
+		t.Error("onSnapshotPart didn't reset timer")
+	}
+
+	// lower term
+	n.nodeState = NodeStateLeader
+	n.currentLeader = 20
+	n.currentTerm = 3
+	part.LeaderID = 4
+	part.Term = 2
+	fakeTimer.state = -1
+	if n.OnSnapshotPart(part) {
+		t.Error("onSnapshotPart returns true when it should deny the part")
+	}
+	if n.currentTerm != 3 || n.currentLeader != 20 {
+		t.Error("onSnapshotPart should not modify node sate on lower term")
+	}
+	if fakeTimer.state != -1 {
+		t.Error("onSnapshotPart should not reset timer on lower term")
+	}
+}
+
 func TestLeaderCommit(t *testing.T) {
 	sm := &testStateMachine{
 		lastApplied: -111,

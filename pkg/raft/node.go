@@ -3,7 +3,6 @@ package raft
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/util"
@@ -52,19 +51,26 @@ type INodeRPCProvider interface {
 
 // INode represents one raft node
 type INode interface {
-	INodeRPCProvider
-
-	NodeID() int
+	// Start starts the node
 	Start()
+
+	// Stop stops the node
 	Stop()
+
+	// NodeID returns the node's ID
+	NodeID() int
+
+	// OnSnapshotPart is invoked when receiving a snapshot part (full snapshot might still be pending)
+	OnSnapshotPart(part *SnapshotRequest) bool
+
+	// Node RPC functions
+	INodeRPCProvider
 }
 
-// node A raft node
+// node define struct for a raft node implementing INode interface
 type node struct {
-	// node lock
 	mu sync.RWMutex
 
-	// data for all states
 	clusterSize   int
 	nodeID        int
 	nodeState     NodeState
@@ -74,9 +80,7 @@ type node struct {
 	votes         map[int]bool // resets when entering candidate state
 	logMgr        ILogManager
 	peerMgr       IPeerManager
-
-	// timer
-	timer IRaftTimer
+	timer         IRaftTimer
 }
 
 // NewNode creates a new node
@@ -85,13 +89,6 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		return nil, err
 	}
 	size := len(peers) + 1
-
-	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		util.Fatalf("Failed to get current working directory for snapshot. %s", err)
-	}
-	SetSnapshotPath(cwd)
 
 	n := &node{
 		mu:            sync.RWMutex{},
@@ -111,7 +108,7 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 	return n, nil
 }
 
-// validate cluster params
+// validateCluster validates params for the raft cluster
 func validateCluster(nodeID int, peers map[int]NodeInfo) error {
 	if len(peers) < 2 {
 		return errorInsufficientPeers
@@ -257,6 +254,15 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 		LastMatch: lastMatchIndex,
 	}, nil
 
+}
+
+// OnSnapshotPart is invoked when a snapshot part is received. Returns false if we don't want to continue (e.g. lower term)
+func (n *node) OnSnapshotPart(part *SnapshotRequest) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Teated in the same way as AE request
+	return n.tryFollowNewTerm(part.LeaderID, part.Term, true)
 }
 
 // RequestVote handles raft RPC RV calls
