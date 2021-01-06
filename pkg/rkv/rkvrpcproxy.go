@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/sidecus/raft/pkg/raft"
 	"github.com/sidecus/raft/pkg/rkv/pb"
@@ -69,28 +68,22 @@ func (proxy *rkvRPCProxy) RequestVote(ctx context.Context, req *raft.RequestVote
 // InstallSnapshot takes snapshot request (with snapshotfile) and send it to the remote peer
 // onReply is gauranteed to be called
 func (proxy *rkvRPCProxy) InstallSnapshot(ctx context.Context, req *raft.SnapshotRequest) (reply *raft.AppendEntriesReply, err error) {
+	// Create gRPC stream writer
 	stream, err := proxy.rpcClient.InstallSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	reader, err := raft.ReadSnapshot(req.File)
-	if err != nil {
-		return nil, err
-	}
-	defer reader.Close()
-
-	// Create stream writer and copy stream
 	writer := raft.NewSnapshotStreamWriter(req, func(r *raft.SnapshotRequest, data []byte) error {
 		sr := fromRaftSnapshotRequest(r)
 		sr.Data = data
 		return stream.Send(sr)
 	})
 
-	if _, err = io.Copy(writer, reader); err != nil {
-		return nil, err
-	}
+	// Send snapshot content
+	raft.SendSnapshot(req.File, writer)
 
+	// Close and reply
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
 		return nil, err

@@ -2,7 +2,6 @@ package rkv
 
 import (
 	"context"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -56,6 +55,7 @@ func (s *rkvRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteReque
 
 // InstallSnapshot receives and installs snapshot on current node
 func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
+	// Create snapshot reader over grpc
 	recvFunc := func() (*raft.SnapshotRequest, []byte, error) {
 		var pbReq *pb.SnapshotRequest
 		var err error
@@ -65,28 +65,18 @@ func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServ
 
 		return toRaftSnapshotRequest(pbReq), pbReq.Data, nil
 	}
-
 	reader, err := raft.NewSnapshotStreamReader(recvFunc, s.node.OnSnapshotPart)
 	if err != nil {
 		return err
 	}
 
-	// Create snapshot file
-	req := reader.RequestHeader()
-	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.SnapshotTerm, req.SnapshotIndex, "remote")
+	// receive snapshot to file
+	req, err := raft.ReceiveSnapshot(s.node.NodeID(), reader)
 	if err != nil {
 		return err
 	}
-	req.File = file
-	defer w.Close()
 
-	// Copy to the file
-	if _, err = io.Copy(w, reader); err != nil {
-		return err
-	}
-
-	// Close snapshot file and try to install
-	w.Close()
+	// Install and reply
 	var reply *raft.AppendEntriesReply
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(500)*time.Millisecond)
 	defer cancel()

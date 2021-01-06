@@ -54,7 +54,7 @@ func TestNewLogManager(t *testing.T) {
 		t.Error("LogManager created with invalid snapshotTerm")
 	}
 
-	if lm.lastSnapshotFile != "" {
+	if lm.snapshotFile != "" {
 		t.Error("LogManager created with invalid lastSnapshotFile")
 	}
 
@@ -554,7 +554,7 @@ func testSnapshot(lmSrc, lmDst *logManager, t *testing.T) {
 	if err := lmSrc.TakeSnapshot(); err != nil {
 		t.Error(err)
 	}
-	if lmSrc.snapshotIndex != -1 && lmSrc.lastSnapshotFile == "" {
+	if lmSrc.snapshotIndex != -1 && lmSrc.snapshotFile == "" {
 		t.Error("Last snapshot file is not saved into log manager")
 	}
 	if lmSrc.snapshotIndex != snapshotIndex || lmSrc.snapshotTerm != snapshotTerm {
@@ -569,10 +569,10 @@ func testSnapshot(lmSrc, lmDst *logManager, t *testing.T) {
 		return
 	}
 
-	if err := lmDst.InstallSnapshot(lmSrc.lastSnapshotFile, lmSrc.snapshotIndex, lmSrc.snapshotTerm); err != nil {
+	if err := lmDst.InstallSnapshot(lmSrc.snapshotFile, lmSrc.snapshotIndex, lmSrc.snapshotTerm); err != nil {
 		t.Error("Install snapshot failed")
 	}
-	if lmDst.lastSnapshotFile != lmSrc.lastSnapshotFile {
+	if lmDst.snapshotFile != lmSrc.snapshotFile {
 		t.Error("Last snapshot file is not set upon installSnapshot")
 	}
 	if lmDst.snapshotIndex != lmSrc.snapshotIndex || lmDst.snapshotTerm != lmSrc.snapshotTerm {

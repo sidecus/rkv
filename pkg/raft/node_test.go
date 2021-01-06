@@ -384,7 +384,7 @@ func TestReplicateData(t *testing.T) {
 	// nextIndex is the same as snapshotIndex, should trigger snapshot request
 	logMgr.snapshotIndex = 3
 	logMgr.snapshotTerm = 2
-	logMgr.lastSnapshotFile = "snapshot"
+	logMgr.snapshotFile = "snapshot"
 	peer1.nextIndex = 3
 	n.replicateData(peer1)
 	if proxy1.isReq == nil {
@@ -392,7 +392,7 @@ func TestReplicateData(t *testing.T) {
 	}
 	isReq := proxy1.isReq
 	if isReq.LeaderID != n.nodeID || isReq.Term != n.currentTerm ||
-		isReq.File != logMgr.lastSnapshotFile ||
+		isReq.File != logMgr.snapshotFile ||
 		isReq.SnapshotIndex != logMgr.snapshotIndex || isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
@@ -400,7 +400,7 @@ func TestReplicateData(t *testing.T) {
 	// nextIndex is smaller than snapshotIndex
 	logMgr.snapshotIndex = 5
 	logMgr.snapshotTerm = 3
-	logMgr.lastSnapshotFile = "snapshotsmaller"
+	logMgr.snapshotFile = "snapshotsmaller"
 	logMgr.lastIndex = logMgr.snapshotIndex + len(logMgr.logs)
 	peer1.nextIndex = 4
 	n.replicateData(peer1)
@@ -408,7 +408,7 @@ func TestReplicateData(t *testing.T) {
 		t.Error("replicateLogsTo should replicate snapshot but it didn't")
 	}
 	isReq = proxy1.isReq
-	if isReq.LeaderID != n.nodeID || isReq.Term != n.currentTerm || isReq.File != logMgr.lastSnapshotFile || isReq.SnapshotIndex != logMgr.snapshotIndex || isReq.SnapshotTerm != logMgr.snapshotTerm {
+	if isReq.LeaderID != n.nodeID || isReq.Term != n.currentTerm || isReq.File != logMgr.snapshotFile || isReq.SnapshotIndex != logMgr.snapshotIndex || isReq.SnapshotTerm != logMgr.snapshotTerm {
 		t.Error("wrong info in SnapshotRequest")
 	}
 }

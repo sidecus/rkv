@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 3000
+const snapshotEntriesCount = 5000
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -35,15 +35,15 @@ type ILogManager interface {
 
 // logManager manages logs and the statemachine, implements ILogManager
 type logManager struct {
-	nodeID           int
-	lastIndex        int
-	lastTerm         int
-	commitIndex      int
-	snapshotIndex    int
-	snapshotTerm     int
-	lastSnapshotFile string
-	lastApplied      int
-	logs             []LogEntry
+	nodeID        int
+	lastIndex     int
+	lastTerm      int
+	commitIndex   int
+	snapshotIndex int
+	snapshotTerm  int
+	snapshotFile  string
+	lastApplied   int
+	logs          []LogEntry
 
 	IStateMachine
 }
@@ -96,7 +96,7 @@ func (lm *logManager) SnapshotTerm() int {
 
 // SnapshotFile returns the recent snapshot file (string zero value otherwise)
 func (lm *logManager) SnapshotFile() string {
-	return lm.lastSnapshotFile
+	return lm.snapshotFile
 }
 
 // GetLogEntry returns log entry for the given index
@@ -213,20 +213,21 @@ func (lm *logManager) TakeSnapshot() error {
 	term := lm.getLogEntryTerm(index)
 
 	// serialize and create snapshot
-	file, w, err := CreateSnapshot(lm.nodeID, term, index, "local")
+	file, w, err := createSnapshot(lm.nodeID, term, index, "local")
 	if err != nil {
 		return err
 	}
 	defer w.Close()
 
-	// Invoke statemachine serialization
-	lm.Serialize(w)
+	// try deleting the old snapshot file
+	deleteSnapshot(lm.snapshotFile)
 
-	// Truncate logs and update snapshotIndex and term
+	// Serialize from statemachien, truncate logs and update info
+	lm.Serialize(w)
 	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
 	lm.snapshotIndex = index
 	lm.snapshotTerm = term
-	lm.lastSnapshotFile = file
+	lm.snapshotFile = file
 
 	return nil
 }
@@ -235,18 +236,20 @@ func (lm *logManager) TakeSnapshot() error {
 // For simplicity, we drop all local logs after installing the snapshot
 func (lm *logManager) InstallSnapshot(snapshotFile string, snapshotIndex int, snapshotTerm int) error {
 	// Read snapshot and deserialize
-	r, err := ReadSnapshot(snapshotFile)
+	r, err := openSnapshot(snapshotFile)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
 
-	// Invoke statemachine deserialization
-	lm.Deserialize(r)
+	// delete the old snapshot file
+	deleteSnapshot(lm.snapshotFile)
 
+	// deserialize into statemachine, update info
+	lm.Deserialize(r)
 	lm.snapshotIndex = snapshotIndex
 	lm.snapshotTerm = snapshotTerm
-	lm.lastSnapshotFile = snapshotFile
+	lm.snapshotFile = snapshotFile
 	lm.lastApplied = snapshotIndex
 	lm.commitIndex = snapshotIndex
 	lm.lastIndex = snapshotIndex
