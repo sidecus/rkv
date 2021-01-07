@@ -134,7 +134,7 @@ func (reader *SnapshotStreamReader) Read(p []byte) (n int, err error) {
 			return 0, err
 		}
 
-		if header != reader.header {
+		if *header != *reader.header {
 			return 0, errorDifferentHeader
 		}
 

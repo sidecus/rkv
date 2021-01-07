@@ -172,7 +172,8 @@ func TestSnapshotStreamReader(t *testing.T) {
 
 		p := data[curMsg]
 		curMsg++
-		return header, p, nil
+		newHeader := *header
+		return &newHeader, p, nil
 	}
 
 	// good flow
