@@ -231,7 +231,7 @@ func TestOnSnapshotPart(t *testing.T) {
 		timer:     fakeTimer,
 	}
 
-	part := &SnapshotRequest{}
+	part := &SnapshotRequestHeader{}
 
 	// same term
 	part.LeaderID = 3

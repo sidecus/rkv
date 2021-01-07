@@ -6,8 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/sidecus/raft/pkg/util"
 )
 
 const snapshotChunkSize = 8 * 1024
@@ -16,6 +14,7 @@ var snapshotPath string
 var errorInvalidSnapshotInfo = errors.New("Invalid snapshot index/term")
 var errorEmptySnapshot = errors.New("empty snapshot received")
 var errorSnapshotFromStaleLeader = errors.New("snapshot received from a stale leader")
+var errorDifferentHeader = errors.New("Different snapshot header received for the same snapshot")
 
 // SetSnapshotPath set the snapshot saving path
 func SetSnapshotPath(path string) {
@@ -50,7 +49,9 @@ func deleteSnapshot(file string) error {
 
 // ReceiveSnapshot receives a snapshot and write it to file
 func ReceiveSnapshot(nodeID int, reader *SnapshotStreamReader) (req *SnapshotRequest, err error) {
-	req = reader.RequestHeader()
+	req = &SnapshotRequest{
+		SnapshotRequestHeader: *reader.RequestHeader(),
+	}
 	snapshotTerm := req.SnapshotTerm
 	snapshotIndex := req.SnapshotIndex
 
@@ -67,9 +68,7 @@ func ReceiveSnapshot(nodeID int, reader *SnapshotStreamReader) (req *SnapshotReq
 	}
 
 	// Set snapshot file name onto a copy of req and return it
-	temp := *req
-	temp.File = file
-	req = &temp
+	req.File = file
 	return
 }
 
@@ -85,13 +84,13 @@ func SendSnapshot(file string, writer *SnapshotStreamWriter) error {
 	return err
 }
 
-type recvFunc func() (*SnapshotRequest, []byte, error)
-type sendFunc func(*SnapshotRequest, []byte) error
-type partCallback func(part *SnapshotRequest) bool
+type recvFunc func() (*SnapshotRequestHeader, []byte, error)
+type sendFunc func(*SnapshotRequestHeader, []byte) error
+type partCallback func(part *SnapshotRequestHeader) bool
 
 // SnapshotStreamReader implements reader interface for reading snapshot messages
 type SnapshotStreamReader struct {
-	req     *SnapshotRequest
+	header  *SnapshotRequestHeader
 	recv    recvFunc
 	partcb  partCallback
 	buf     []byte
@@ -101,7 +100,7 @@ type SnapshotStreamReader struct {
 // NewSnapshotStreamReader creates a new SnapshotStreamReader
 func NewSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStreamReader, error) {
 	// Do the first read to get snapshotTerm and snapshotIndex
-	req, data, err := recv()
+	header, data, err := recv()
 	if err == io.EOF {
 		err = errorEmptySnapshot
 	}
@@ -109,12 +108,12 @@ func NewSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStrea
 		return nil, err
 	}
 
-	if !partcb(req) {
+	if !partcb(header) {
 		return nil, errorSnapshotFromStaleLeader
 	}
 
 	return &SnapshotStreamReader{
-		req:    req,
+		header: header,
 		recv:   recv,
 		partcb: partcb,
 		buf:    data,
@@ -122,24 +121,24 @@ func NewSnapshotStreamReader(recv recvFunc, partcb partCallback) (*SnapshotStrea
 }
 
 // RequestHeader returns the snapshot request header
-func (reader *SnapshotStreamReader) RequestHeader() *SnapshotRequest {
-	return reader.req
+func (reader *SnapshotStreamReader) RequestHeader() *SnapshotRequestHeader {
+	return reader.header
 }
 
 // Read implements io.Reader to read snapshot messages from a source
 func (reader *SnapshotStreamReader) Read(p []byte) (n int, err error) {
 	if reader.readPtr == len(reader.buf) {
 		// No more data in buf, do another read
-		req, data, err := reader.recv()
+		header, data, err := reader.recv()
 		if err != nil {
 			return 0, err
 		}
 
-		if req.SnapshotTerm != reader.req.SnapshotTerm || req.SnapshotIndex != reader.req.SnapshotIndex {
-			util.Panicln("snapshot stream message has different headers than former")
+		if header != reader.header {
+			return 0, errorDifferentHeader
 		}
 
-		if !reader.partcb(req) {
+		if !reader.partcb(header) {
 			return 0, errorSnapshotFromStaleLeader
 		}
 
@@ -155,21 +154,21 @@ func (reader *SnapshotStreamReader) Read(p []byte) (n int, err error) {
 
 // SnapshotStreamWriter implements a writer interface for sending snapshot messages
 type SnapshotStreamWriter struct {
-	req  *SnapshotRequest
-	send sendFunc
+	header *SnapshotRequestHeader
+	send   sendFunc
 }
 
 // NewSnapshotStreamWriter creates a new gRPCSnapshotStreamWriter
-func NewSnapshotStreamWriter(req *SnapshotRequest, send sendFunc) *SnapshotStreamWriter {
+func NewSnapshotStreamWriter(header *SnapshotRequestHeader, send sendFunc) *SnapshotStreamWriter {
 	return &SnapshotStreamWriter{
-		req:  req,
-		send: send,
+		header: header,
+		send:   send,
 	}
 }
 
 // Write implements io.Writer to send snapshot data over grpc stream
-func (writer *SnapshotStreamWriter) Write(p []byte) (n int, err error) {
-	n = len(p)
-	err = writer.send(writer.req, p)
+func (writer *SnapshotStreamWriter) Write(data []byte) (n int, err error) {
+	n = len(data)
+	err = writer.send(writer.header, data)
 	return
 }

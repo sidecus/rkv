@@ -197,10 +197,12 @@ func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
 // createSnapshotRequest creates a snapshot request to send to follower
 func (n *node) createSnapshotRequest() *SnapshotRequest {
 	return &SnapshotRequest{
-		Term:          n.currentTerm,
-		LeaderID:      n.nodeID,
-		SnapshotIndex: n.logMgr.SnapshotIndex(),
-		SnapshotTerm:  n.logMgr.SnapshotTerm(),
-		File:          n.logMgr.SnapshotFile(),
+		SnapshotRequestHeader: SnapshotRequestHeader{
+			Term:          n.currentTerm,
+			LeaderID:      n.nodeID,
+			SnapshotIndex: n.logMgr.SnapshotIndex(),
+			SnapshotTerm:  n.logMgr.SnapshotTerm(),
+		},
+		File: n.logMgr.SnapshotFile(),
 	}
 }

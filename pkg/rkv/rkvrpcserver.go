@@ -56,14 +56,14 @@ func (s *rkvRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteReque
 // InstallSnapshot receives and installs snapshot on current node
 func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
 	// Create snapshot reader over grpc
-	recvFunc := func() (*raft.SnapshotRequest, []byte, error) {
+	recvFunc := func() (*raft.SnapshotRequestHeader, []byte, error) {
 		var pbReq *pb.SnapshotRequest
 		var err error
 		if pbReq, err = stream.Recv(); err != nil {
 			return nil, nil, err
 		}
 
-		return toRaftSnapshotRequest(pbReq), pbReq.Data, nil
+		return toRaftSnapshotRequestHeader(pbReq), pbReq.Data, nil
 	}
 	reader, err := raft.NewSnapshotStreamReader(recvFunc, s.node.OnSnapshotPart)
 	if err != nil {

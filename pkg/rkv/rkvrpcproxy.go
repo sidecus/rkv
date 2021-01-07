@@ -74,8 +74,8 @@ func (proxy *rkvRPCProxy) InstallSnapshot(ctx context.Context, req *raft.Snapsho
 		return nil, err
 	}
 
-	writer := raft.NewSnapshotStreamWriter(req, func(r *raft.SnapshotRequest, data []byte) error {
-		sr := fromRaftSnapshotRequest(r)
+	writer := raft.NewSnapshotStreamWriter(&req.SnapshotRequestHeader, func(header *raft.SnapshotRequestHeader, data []byte) error {
+		sr := fromRaftSnapshotRequestHeader(header)
 		sr.Data = data
 		return stream.Send(sr)
 	})

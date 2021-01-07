@@ -8,8 +8,8 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const minElectionTimeoutMS = 300
-const maxElectionTimeoutMS = 600
+const minElectionTimeoutMS = 600
+const maxElectionTimeoutMS = 2000
 const heartbeatTimeoutMS = 150
 const heartbeatTimeout = time.Duration(heartbeatTimeoutMS) * time.Millisecond
 
@@ -39,20 +39,14 @@ func newRaftTimer(timerCallback func(state NodeState, term int)) IRaftTimer {
 		evt:      make(chan resetEvt, 100), // use buffered channels so that we don't block sender
 	}
 
-	rt.timer = time.NewTimer(rt.getElectionTimeout())
-	util.StopTimer(rt.timer)
 	return rt
 }
 
-// start starts the timer with follower state
+// start starts the timer with a large interval
 func (rt *raftTimer) start() {
-	if rt.timer == nil {
-		util.Panicf("Timer not initialized\n")
-	}
-
-	// Start timer event loop
+	rt.timer = time.NewTimer(time.Hour * 24)
 	rt.wg.Add(1)
-	go rt.eventLoop()
+	go rt.run()
 }
 
 // stopRaftTimer stops the raft timer goroutine
@@ -67,38 +61,51 @@ func (rt *raftTimer) reset(newState NodeState, term int) {
 	rt.evt <- resetEvt{state: newState, term: term}
 }
 
-// timer event loop
-func (rt *raftTimer) eventLoop() {
-	state := NodeState(NodeStateFollower)
-	term := -1
+// run runs the timer event loop
+func (rt *raftTimer) run() {
+	state, term := NodeStateFollower, 0
 	stop := false
 	for !stop {
 		select {
 		case info := <-rt.evt:
-			state = info.state
-			term = info.term
-
-			// reset timer and drain events
-			var timeout time.Duration
-			if state == NodeStateLeader {
-				timeout = heartbeatTimeout
-			} else {
-				timeout = rt.getElectionTimeout()
-			}
+			state, term = info.state, info.term
+			timeout := getTimeout(state, term)
+			util.WriteVerbose("Resetting timer. state:%d, term:%d, timeout:%dms", state, term, timeout/time.Millisecond)
 			util.ResetTimer(rt.timer, timeout)
 		case _, ok := <-rt.timer.C:
 			if !ok {
 				stop = true
-			} else {
-				rt.callback(state, term)
+				break
 			}
+			util.WriteVerbose("Timer event received. state:%d, term:%d", state, term)
+			rt.callback(state, term)
 		}
 	}
 	rt.wg.Done()
 }
 
-// getElectionTimeout gets a random election timeout
-func (rt *raftTimer) getElectionTimeout() time.Duration {
-	timeoutMS := rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS) + minElectionTimeoutMS
-	return time.Duration(timeoutMS) * time.Millisecond
+var firstFollow = true
+
+func getTimeout(state NodeState, term int) (timeout time.Duration) {
+	if state == NodeStateLeader {
+		timeout = heartbeatTimeout
+		return
+	}
+
+	ms := rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS) + minElectionTimeoutMS
+	timeout = time.Duration(ms) * time.Millisecond
+
+	isFollow := term > 0 && state == NodeStateFollower
+	if firstFollow && isFollow {
+		// Hack:
+		// When this node starts, it will start voting and follow current cluster term based on negtive vote results we receive.
+		// However it might take time for leader to establish RPC connection with us. This means heartbeat to us will get delayed.
+		// If we start a new vote again too quickly, it'll increase the cluster's current term and cause other nodes to start election as well.
+		// Worst case scenario it leads to a short "election storm" even when leader and all other nodes are working as usual.
+		// To mitigate this, we use a larger election timeout after first time becoming follower.
+		timeout = timeout * 10
+		firstFollow = false
+	}
+
+	return
 }

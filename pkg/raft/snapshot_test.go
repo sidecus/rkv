@@ -79,7 +79,7 @@ func TestReceiveSnapshot(t *testing.T) {
 	setSnapshotPathToTempDir()
 
 	filler := byte(2)
-	partcb := func(*SnapshotRequest) bool { return true }
+	partcb := func(*SnapshotRequestHeader) bool { return true }
 	recv, n := createTestRecvFunc(filler)
 	reader, _ := NewSnapshotStreamReader(recv, partcb)
 
@@ -89,9 +89,7 @@ func TestReceiveSnapshot(t *testing.T) {
 	}
 	defer deleteSnapshot(req.File)
 
-	if req.LeaderID != reader.req.LeaderID ||
-		req.SnapshotTerm != reader.req.SnapshotTerm ||
-		req.SnapshotIndex != reader.req.SnapshotIndex {
+	if req.SnapshotRequestHeader != *reader.header {
 		t.Error("Received incorrect snapshot header")
 	}
 
@@ -108,13 +106,13 @@ func TestSendSnapshot(t *testing.T) {
 	n := createTestSnapshot(file, filler)
 	defer deleteSnapshot(file)
 
-	req := &SnapshotRequest{
+	req := &SnapshotRequestHeader{
 		LeaderID:      5,
 		SnapshotTerm:  4,
 		SnapshotIndex: 3,
 	}
 	var result []byte
-	writer := NewSnapshotStreamWriter(req, func(r *SnapshotRequest, data []byte) error {
+	writer := NewSnapshotStreamWriter(req, func(r *SnapshotRequestHeader, data []byte) error {
 		if r.LeaderID != req.LeaderID ||
 			r.SnapshotTerm != req.SnapshotTerm ||
 			r.SnapshotIndex != req.SnapshotIndex {
@@ -138,45 +136,43 @@ func TestSendSnapshot(t *testing.T) {
 }
 
 func TestSnapshotStreamReader(t *testing.T) {
-	var sr *SnapshotRequest
-	partCallback := func(part *SnapshotRequest) bool {
-		sr = part
+	var callbackheader *SnapshotRequestHeader
+	partCallback := func(part *SnapshotRequestHeader) bool {
+		callbackheader = part
 		return true
 	}
+
 	// Directly return EOF should result in an error
-	reader, err := NewSnapshotStreamReader(func() (*SnapshotRequest, []byte, error) { return nil, nil, io.EOF }, partCallback)
-	if err != errorEmptySnapshot || reader != nil || sr != nil {
+	reader, err := NewSnapshotStreamReader(func() (*SnapshotRequestHeader, []byte, error) { return nil, nil, io.EOF }, partCallback)
+	if err != errorEmptySnapshot || reader != nil || callbackheader != nil {
 		t.Error("reader doesn't return expected error on empty stream")
 	}
 
-	// test data
-	messages := make([]*SnapshotRequest, 5)
+	// prepare test data
+	header := &SnapshotRequestHeader{
+		Term:          10,
+		LeaderID:      11,
+		SnapshotIndex: 100,
+		SnapshotTerm:  50,
+	}
 	data := make([][]byte, 5)
 	totalExpectedBytes := 0
-	for i := 0; i < len(messages); i++ {
-		messages[i] = &SnapshotRequest{
-			Term:          10,
-			LeaderID:      11,
-			SnapshotIndex: 100,
-			SnapshotTerm:  50,
-		}
-
+	for i := 0; i < len(data); i++ {
 		size := 10 * i
 		totalExpectedBytes += size
 		data[i] = make([]byte, size)
 	}
 	curMsg := 0
-	recvFunc := func() (*SnapshotRequest, []byte, error) {
-		if curMsg == len(messages) {
+	recvFunc := func() (*SnapshotRequestHeader, []byte, error) {
+		if curMsg == len(data) {
 			return nil, nil, io.EOF
-		} else if curMsg > len(messages) {
+		} else if curMsg > len(data) {
 			return nil, nil, errors.New("Artificial error")
 		}
 
-		msg := messages[curMsg]
 		p := data[curMsg]
 		curMsg++
-		return msg, p, nil
+		return header, p, nil
 	}
 
 	// good flow
@@ -184,9 +180,10 @@ func TestSnapshotStreamReader(t *testing.T) {
 	if err != nil {
 		t.Error("SnapshotStreamReader failed")
 	}
-	if reader.req.Term != 10 || reader.req.LeaderID != 11 || reader.req.SnapshotIndex != 100 || reader.req.SnapshotTerm != 50 {
+	if *reader.header != *header {
 		t.Error("Reader didn't read the snapshot header info correctly")
 	}
+
 	totalReadBytes := 0
 	result := make([]byte, 20)
 	for {
@@ -197,9 +194,8 @@ func TestSnapshotStreamReader(t *testing.T) {
 		if err != nil {
 			t.Error("snapshot stream read error:" + err.Error())
 		}
-		if sr.LeaderID != messages[0].LeaderID || sr.Term != messages[0].Term ||
-			sr.SnapshotIndex != messages[0].SnapshotIndex || sr.SnapshotTerm != messages[0].SnapshotTerm {
-			t.Error("Reader didn't invoke callback correctly")
+		if *callbackheader != *header {
+			t.Error("Reader didn't invoke callback with the right info")
 		}
 		totalReadBytes += n
 	}
@@ -208,14 +204,14 @@ func TestSnapshotStreamReader(t *testing.T) {
 	}
 
 	// error flow - returns error when recvFunc fails
-	curMsg = len(messages) + 1
+	curMsg = len(data) + 1
 	if _, err = reader.Read(result); err == nil {
 		t.Error("Reader eats error from RPC stream")
 	}
 
 	// error flow - returns error when partCallback returns false (mimicing part has lower term scenario)
 	curMsg = 0
-	errCallback := func(*SnapshotRequest) bool { return curMsg <= 1 }
+	errCallback := func(*SnapshotRequestHeader) bool { return curMsg <= 1 }
 	reader, _ = NewSnapshotStreamReader(recvFunc, errCallback)
 	if _, err = reader.Read(result); err == nil {
 		t.Error("Reader should return error if partCallback returns false")
@@ -232,7 +228,7 @@ func TestGRPCSnapshotStreamWriter(t *testing.T) {
 		payloads[i] = make([]byte, size)
 		totalExpectedWritten += size
 	}
-	req := &SnapshotRequest{
+	req := &SnapshotRequestHeader{
 		Term:          1,
 		LeaderID:      2,
 		SnapshotTerm:  3,
@@ -240,9 +236,9 @@ func TestGRPCSnapshotStreamWriter(t *testing.T) {
 	}
 
 	// positive flow
-	var msgSent *SnapshotRequest
+	var msgSent *SnapshotRequestHeader
 	var dataSent []byte
-	writer := NewSnapshotStreamWriter(req, func(msg *SnapshotRequest, data []byte) error {
+	writer := NewSnapshotStreamWriter(req, func(msg *SnapshotRequestHeader, data []byte) error {
 		msgSent = msg
 		dataSent = data
 		return nil
@@ -267,7 +263,7 @@ func TestGRPCSnapshotStreamWriter(t *testing.T) {
 	}
 
 	// error scenario
-	writer = NewSnapshotStreamWriter(req, func(msg *SnapshotRequest, data []byte) error {
+	writer = NewSnapshotStreamWriter(req, func(msg *SnapshotRequestHeader, data []byte) error {
 		return errors.New("artifical write error")
 	})
 	if _, err := writer.Write([]byte{}); err == nil {
@@ -315,10 +311,10 @@ func validateSnapshotFileContent(f string, n int, filler byte) error {
 func createTestRecvFunc(filler byte) (recvFunc, int) {
 	i := 0
 	testData := createTestData(filler)
-	return func() (*SnapshotRequest, []byte, error) {
+	return func() (*SnapshotRequestHeader, []byte, error) {
 		i++
 		if i == 1 {
-			return &SnapshotRequest{
+			return &SnapshotRequestHeader{
 				Term:          3,
 				SnapshotIndex: 20,
 				SnapshotTerm:  2,

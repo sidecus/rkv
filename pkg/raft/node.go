@@ -18,11 +18,11 @@ type NodeState int
 
 const (
 	//NodeStateFollower state
-	NodeStateFollower = 1
+	NodeStateFollower = NodeState(1)
 	// NodeStateCandidate state
-	NodeStateCandidate = 2
+	NodeStateCandidate = NodeState(2)
 	// NodeStateLeader state
-	NodeStateLeader = 3
+	NodeStateLeader = NodeState(3)
 )
 
 // NodeInfo contains info for a peer node including id and endpoint
@@ -61,7 +61,7 @@ type INode interface {
 	NodeID() int
 
 	// OnSnapshotPart is invoked when receiving a snapshot part (full snapshot might still be pending)
-	OnSnapshotPart(part *SnapshotRequest) bool
+	OnSnapshotPart(part *SnapshotRequestHeader) bool
 
 	// Node RPC functions
 	INodeRPCProvider
@@ -257,7 +257,7 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 }
 
 // OnSnapshotPart is invoked when a snapshot part is received. Returns false if we don't want to continue (e.g. lower term)
-func (n *node) OnSnapshotPart(part *SnapshotRequest) bool {
+func (n *node) OnSnapshotPart(part *SnapshotRequestHeader) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
