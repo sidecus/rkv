@@ -443,7 +443,7 @@ func (n *node) commitTo(targetCommitIndex int) {
 	if newCommit, newSnapshot := n.logMgr.CommitAndApply(targetCommitIndex); newCommit {
 		util.WriteTrace("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 		if newSnapshot {
-			util.WriteInfo("T%d: Node%d created new snapshot L%d_T%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotIndex(), n.logMgr.SnapshotTerm())
+			util.WriteInfo("T%d: Node%d created new snapshot T%dL%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotTerm(), n.logMgr.SnapshotIndex())
 		}
 	}
 }

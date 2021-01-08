@@ -5,6 +5,7 @@ import (
 )
 
 const snapshotEntriesCount = 5000
+const logsCapacity = snapshotEntriesCount * 3 / 2
 
 // LogEntry - one raft log entry, with term and index
 type LogEntry struct {
@@ -62,7 +63,7 @@ func newLogMgr(nodeID int, sm IStateMachine) ILogManager {
 		snapshotIndex: -1,
 		snapshotTerm:  -1,
 		lastApplied:   -1,
-		logs:          make([]LogEntry, 0, 100),
+		logs:          make([]LogEntry, 0, logsCapacity),
 		IStateMachine: sm,
 	}
 

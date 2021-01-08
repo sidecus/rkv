@@ -174,13 +174,15 @@ func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*Execut
 }
 
 // createAERequest creates an AppendEntriesRequest with proper log payload
-func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
-	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
-	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
-	startIdx := util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
+func (n *node) createAERequest(startIdx int, maxCnt int) *AppendEntriesRequest {
+	// make sure startIdx is larger than snapshotIndex, and endIdx is smaller or equal to lastIndex
+	startIdx = util.Max(startIdx, n.logMgr.SnapshotIndex()+1)
 	endIdx := util.Min(n.logMgr.LastIndex()+1, startIdx+maxCnt)
 
-	entries, prevIdx, prevTerm := n.logMgr.GetLogEntries(startIdx, endIdx)
+	// Get log entries and make a copy of them
+	logs, prevIdx, prevTerm := n.logMgr.GetLogEntries(startIdx, endIdx)
+	entries := make([]LogEntry, len(logs))
+	copy(entries, logs)
 
 	req := &AppendEntriesRequest{
 		Term:         n.currentTerm,
