@@ -4,7 +4,7 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const snapshotEntriesCount = 5000
+const snapshotEntriesCount = 4096
 const logsCapacity = snapshotEntriesCount * 3 / 2
 
 // LogEntry - one raft log entry, with term and index
@@ -35,6 +35,7 @@ type ILogManager interface {
 }
 
 // logManager manages logs and the statemachine, implements ILogManager
+// Note: we make sure the "logs" field always starts from the begining of backing array for better memory efficiency
 type logManager struct {
 	nodeID        int
 	lastIndex     int
@@ -105,7 +106,7 @@ func (lm *logManager) GetLogEntry(index int) LogEntry {
 	if index <= lm.snapshotIndex || index > lm.LastIndex() {
 		util.Panicf("GetLogEntry index %d shall be between (snapshotIndex(%d), lastIndex(%d)]\n", index, lm.snapshotIndex, lm.LastIndex())
 	}
-	return lm.logs[index-(lm.snapshotIndex+1)]
+	return lm.logs[lm.shiftToActualIndex(index)]
 }
 
 // GetLogEntries returns entries between [start, end).
@@ -126,8 +127,8 @@ func (lm *logManager) GetLogEntries(start int, end int) (entries []LogEntry, pre
 
 	prevIndex = start - 1
 	prevTerm = lm.getLogEntryTerm(prevIndex)
-	actualStart := start - (lm.snapshotIndex + 1)
-	actualEnd := util.Min(end-(lm.snapshotIndex+1), len(lm.logs))
+	actualStart := lm.shiftToActualIndex(start)
+	actualEnd := lm.shiftToActualIndex(end)
 	entries = lm.logs[actualStart:actualEnd]
 
 	return
@@ -161,8 +162,8 @@ func (lm *logManager) ProcessLogs(prevLogIndex, prevLogTerm int, entries []LogEn
 	// Find first non matching entry's index, and drop local logs starting from that position,
 	// then append from incoming entries starting from that position
 	conflictIndex := lm.findFirstConflictIndex(prevLogIndex, entries)
+	lm.logs = lm.logs[:lm.shiftToActualIndex(conflictIndex)]
 	toAppend := entries[conflictIndex-(prevLogIndex+1):]
-	lm.logs, _, _ = lm.GetLogEntries(lm.snapshotIndex+1, conflictIndex)
 
 	// appendLogs adjusts lastIndex accordingly
 	lm.appendLogs(toAppend...)
@@ -223,9 +224,17 @@ func (lm *logManager) TakeSnapshot() error {
 	// try deleting the old snapshot file
 	deleteSnapshot(lm.snapshotFile)
 
-	// Serialize from statemachien, truncate logs and update info
-	lm.Serialize(w)
-	lm.logs, _, _ = lm.GetLogEntries(index+1, lm.lastIndex+1)
+	// Serialize from statemachine, truncate logs and update info
+	if err = lm.Serialize(w); err != nil {
+		util.WriteError("Fatal: Serialize snapshot file %s failed. err:%s", file, err)
+		return err
+	}
+
+	// use copy to ensure lm.logs always point to backing array start
+	remaining, _, _ := lm.GetLogEntries(index+1, lm.lastIndex+1)
+	lm.logs = lm.logs[0:len(remaining)]
+	copy(lm.logs, remaining)
+
 	lm.snapshotIndex = index
 	lm.snapshotTerm = term
 	lm.snapshotFile = file
@@ -247,7 +256,11 @@ func (lm *logManager) InstallSnapshot(snapshotFile string, snapshotIndex int, sn
 	deleteSnapshot(lm.snapshotFile)
 
 	// deserialize into statemachine, update info
-	lm.Deserialize(r)
+	if err = lm.Deserialize(r); err != nil {
+		util.WriteError("Fatal: Deserialize from snapshot file %s failed. err:%s", snapshotFile, err)
+		return err
+	}
+
 	lm.snapshotIndex = snapshotIndex
 	lm.snapshotTerm = snapshotTerm
 	lm.snapshotFile = snapshotFile
@@ -322,6 +335,8 @@ func (lm *logManager) validateLogEntries(prevLogIndex, prevLogTerm int, entries 
 // appendLogs appends new entries to logs, should only be called internally.
 // Externall caller should use ProcessCmd or ProcessLogs instead
 func (lm *logManager) appendLogs(entries ...LogEntry) {
+	// entries can be empty, e.g. from heartbeat
+	// lm.logs can also be empty, e.g. node starting, or right after a snapshot
 	lm.logs = append(lm.logs, entries...)
 	if len(lm.logs) == 0 {
 		lm.lastIndex = lm.snapshotIndex
@@ -345,4 +360,9 @@ func (lm *logManager) getLogEntryTerm(index int) int {
 	}
 
 	return lm.GetLogEntry(index).Term
+}
+
+// shift a log index to index in lm.logs
+func (lm *logManager) shiftToActualIndex(logIndex int) int {
+	return logIndex - (lm.snapshotIndex + 1)
 }

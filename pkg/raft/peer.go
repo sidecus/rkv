@@ -4,8 +4,8 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const nextIndexFallbackStep = 20
-const maxAppendEntriesCount = 50
+const nextIndexFallbackStep = 1
+const maxAppendEntriesCount = 64
 
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
