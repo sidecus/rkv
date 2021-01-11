@@ -4,12 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	"google.golang.org/grpc"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 )
 
 const (
@@ -55,7 +56,9 @@ func get(conn *grpc.ClientConn, req *pb.GetRequest) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Get Success: %v, Value: %s\n", reply.NodeID, reply.Success, reply.Value)
+	fmt.Printf("Success :%v\n", reply.Success)
+	fmt.Printf("Value   :%s\n", reply.Value)
+	fmt.Printf("Run on  :Node%d\n", reply.NodeID)
 }
 
 func set(conn *grpc.ClientConn, req *pb.SetRequest) {
@@ -68,7 +71,8 @@ func set(conn *grpc.ClientConn, req *pb.SetRequest) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Set Success: %v\n", reply.NodeID, reply.Success)
+	fmt.Printf("Success :%v\n", reply.Success)
+	fmt.Printf("Run on  :Node%d\n", reply.NodeID)
 }
 
 func delete(conn *grpc.ClientConn, req *pb.DeleteRequest) {
@@ -81,7 +85,8 @@ func delete(conn *grpc.ClientConn, req *pb.DeleteRequest) {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	fmt.Printf("Node%d - Delete Success: %v\n", reply.NodeID, reply.Success)
+	fmt.Printf("Success :%v\n", reply.Success)
+	fmt.Printf("Run on  :Node%d\n", reply.NodeID)
 }
 
 type runMode struct {
@@ -137,20 +142,30 @@ func parseArgs() runMode {
 		benchMarkCmd.IntVar(&times, "times", 10000, "times to run")
 		benchMarkCmd.Parse(args)
 		mode.params = times
+	default:
+		mode.name = ""
 	}
 
-	if mode.name == "" || mode.address == "" {
-		fmt.Println("unknown mode or address")
+	if mode.name == "" {
 		printUsage()
-		os.Exit(1)
+		log.Fatalln("Unsupported mode")
+	}
+
+	if mode.address == "" {
+		printUsage()
+		log.Fatalln("address cannot be empty")
 	}
 
 	return mode
 }
 
 func printUsage() {
-	fmt.Println("rkvclient set -address <address> -key <key> -value <value>")
-	fmt.Println("rkvclient get -address <address> -key <key>")
-	fmt.Println("rkvclient del -address <address> -key <key>")
-	fmt.Println("rkvclient benchmark -address <address> -times <times>")
+	fmt.Println("Usage of rkvclient:")
+	fmt.Println("\trkvclient <mode> -address <nodeaddress> <othermodeparams>")
+	fmt.Println("Supported modes:")
+	fmt.Println("\tset       -address <address> -key <key> -value <value>")
+	fmt.Println("\tget       -address <address> -key <key>")
+	fmt.Println("\tdel       -address <address> -key <key>")
+	fmt.Println("\tbenchmark -address <address> -times <times>")
+	fmt.Println()
 }

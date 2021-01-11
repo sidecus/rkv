@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestCmdSet(t *testing.T) {
-	store := NewKVStore()
+	store := newRKVStore()
 
 	store.Apply(raft.StateMachineCmd{
 		CmdType: KVCmdSet,
@@ -36,7 +36,7 @@ func TestCmdSet(t *testing.T) {
 }
 
 func TestCmdDel(t *testing.T) {
-	store := NewKVStore()
+	store := newRKVStore()
 
 	store.Apply(raft.StateMachineCmd{
 		CmdType: KVCmdSet,
@@ -78,7 +78,7 @@ func TestCmdDel(t *testing.T) {
 }
 
 func TestSerilization(t *testing.T) {
-	store := NewKVStore()
+	store := newRKVStore()
 
 	store.Apply(raft.StateMachineCmd{
 		CmdType: KVCmdSet,
@@ -102,7 +102,7 @@ func TestSerilization(t *testing.T) {
 		return
 	}
 
-	newStore := NewKVStore()
+	newStore := newRKVStore()
 	if err := newStore.Deserialize(buf); err != nil {
 		t.Errorf("InstallSnapshot returned error %s", err)
 	}

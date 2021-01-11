@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sidecus/raft/pkg/kvstore"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv"
 	"github.com/sidecus/raft/pkg/util"
 )
 
@@ -65,7 +65,7 @@ func runRPC(nodeID int, port string, addresses []string) {
 		}
 	}
 
-	kvstore.StartRaftKVStore(nodeID, port, peers)
+	rkv.StartRKV(nodeID, port, peers)
 }
 
 func getNodePort(nodeID int, addresses []string) (string, error) {

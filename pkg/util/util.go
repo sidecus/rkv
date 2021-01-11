@@ -2,7 +2,7 @@ package util
 
 import "time"
 
-// StopTimer stops and drains the timer - please make sure timer channel doesn't have others listening to it
+// StopTimer stops and drains the timer - please make sure current goroutine is the only time event channel consumer
 func StopTimer(timer *time.Timer) {
 	if !timer.Stop() {
 		// The Timer document is inaccurate with a bad exmaple - timer.Stop returning false doesn't necessarily

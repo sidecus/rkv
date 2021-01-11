@@ -28,7 +28,7 @@ func (sm *testStateMachine) Deserialize(r io.Reader) error {
 }
 
 func TestNewLogManager(t *testing.T) {
-	lm := NewLogMgr(100, &testStateMachine{}).(*LogManager)
+	lm := newLogMgr(100, &testStateMachine{}).(*logManager)
 
 	if lm.nodeID != 100 {
 		t.Error("LogManager created with invalid node ID")
@@ -54,7 +54,7 @@ func TestNewLogManager(t *testing.T) {
 		t.Error("LogManager created with invalid snapshotTerm")
 	}
 
-	if lm.lastSnapshotFile != "" {
+	if lm.snapshotFile != "" {
 		t.Error("LogManager created with invalid lastSnapshotFile")
 	}
 
@@ -64,7 +64,7 @@ func TestNewLogManager(t *testing.T) {
 }
 
 func TestProcessCmd(t *testing.T) {
-	lm := NewLogMgr(100, &testStateMachine{}).(*LogManager)
+	lm := newLogMgr(100, &testStateMachine{}).(*logManager)
 	cmd := StateMachineCmd{}
 	if lm.LastIndex() != -1 {
 		t.Error("LastIndex is not -1 upon init")
@@ -117,7 +117,7 @@ func TestProcessCmd(t *testing.T) {
 
 func TestProcessLogs(t *testing.T) {
 	sm := &testStateMachine{lastApplied: -1}
-	lm := NewLogMgr(100, sm).(*LogManager)
+	lm := newLogMgr(100, sm).(*logManager)
 	lm.logs = make([]LogEntry, 5)
 	lm.lastIndex = 14
 	lm.lastTerm = 13
@@ -183,10 +183,10 @@ func TestProcessLogs(t *testing.T) {
 	// all entries are overlapping and non matching
 	entries = generateTestEntries(12, 20)
 	if !lm.ProcessLogs(12, 12, entries) {
-		t.Error("appendLogs should return true by skiping non matching entries")
+		t.Error("ProcessLogs should return true by skiping non matching entries")
 	}
 	if lm.LastIndex() != 14 || lm.lastTerm != 20 || len(lm.logs)+lm.snapshotIndex != lm.LastIndex() {
-		t.Error("appendLogs should append all new good entries")
+		t.Error("ProcessLogs should append all new good entries")
 	}
 
 	// empty logs scenario
@@ -195,10 +195,10 @@ func TestProcessLogs(t *testing.T) {
 	lm.snapshotIndex = -1
 	entries = generateTestEntries(-1, 10)
 	if !lm.ProcessLogs(-1, -1, entries) {
-		t.Error("appendLogs should append new entries when it's empty")
+		t.Error("ProcessLogs should append new entries when it's empty")
 	}
 	if lm.LastIndex() != 1 || lm.lastTerm != 10 || len(lm.logs) != lm.LastIndex()+1 {
-		t.Error("appendLogs should append all new good entries when it's empty")
+		t.Error("ProcessLogs should append all new good entries when it's empty")
 	}
 
 	// right after snapshot scenario
@@ -208,16 +208,16 @@ func TestProcessLogs(t *testing.T) {
 	lm.snapshotTerm = 30
 	entries = generateTestEntries(3, 40)
 	if !lm.ProcessLogs(3, 30, entries) {
-		t.Error("appendLogs should append new entries when it's empty")
+		t.Error("ProcessLogs should append new entries when it's empty")
 	}
 	if lm.LastIndex() != 5 || lm.lastTerm != 40 || len(lm.logs)+lm.snapshotIndex != lm.LastIndex() {
-		t.Error("appendLogs should append all new good entries when it's empty")
+		t.Error("ProcessLogs should append all new good entries when it's empty")
 	}
 }
 
 func TestCommit(t *testing.T) {
 	sm := &testStateMachine{lastApplied: -1}
-	lm := NewLogMgr(100, sm).(*LogManager)
+	lm := newLogMgr(100, sm).(*logManager)
 
 	// append two logs to it
 	entries := generateTestEntries(-1, 1)
@@ -257,7 +257,7 @@ func TestCommit(t *testing.T) {
 }
 
 func TestHasMatchingPrevEntry(t *testing.T) {
-	lm := LogManager{
+	lm := logManager{
 		logs:          make([]LogEntry, 100),
 		lastIndex:     10,
 		snapshotIndex: -1,
@@ -283,7 +283,7 @@ func TestHasMatchingPrevEntry(t *testing.T) {
 }
 
 func TestAppendLogs(t *testing.T) {
-	lm := &LogManager{
+	lm := &logManager{
 		logs:          make([]LogEntry, 5),
 		lastIndex:     4,
 		lastTerm:      3,
@@ -293,14 +293,14 @@ func TestAppendLogs(t *testing.T) {
 	lm.logs[4] = LogEntry{Index: 4, Term: 3}
 
 	entries := make([]LogEntry, 0)
-	lm.appendLogs(entries)
+	lm.appendLogs(entries...)
 	if lm.LastIndex() != 4 || lm.lastTerm != 3 {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on empty input")
 	}
 
 	// Append two more entries @term 20
 	entries = generateTestEntries(4, 20)
-	lm.appendLogs(entries)
+	lm.appendLogs(entries...)
 	if lm.LastIndex() != 6 || lm.lastTerm != 20 || len(lm.logs) != 7 {
 		t.Error("append doesn't update lastIndex/lastTerm correctly on non empty input")
 	}
@@ -311,12 +311,12 @@ func TestAppendLogs(t *testing.T) {
 	lm.logs = lm.logs[0:0]
 	lm.lastIndex = -1
 	lm.lastTerm = -1
-	lm.appendLogs([]LogEntry{})
+	lm.appendLogs()
 	if lm.lastIndex != lm.snapshotIndex || lm.lastTerm != lm.snapshotTerm {
 		t.Error("Appending empty entries after snapshot doesn't correct last index and term")
 	}
 	entries = generateTestEntries(lm.snapshotIndex, 21)
-	lm.appendLogs(entries)
+	lm.appendLogs(entries...)
 	if lm.lastIndex != lm.snapshotIndex+len(entries) || lm.lastTerm != 21 {
 		t.Error("Appending non empty entries after snapshot doesn't correct last index and term")
 	}
@@ -325,14 +325,14 @@ func TestAppendLogs(t *testing.T) {
 	lm.snapshotIndex = -1
 	lm.snapshotTerm = -1
 	lm.logs = []LogEntry{}
-	lm.appendLogs([]LogEntry{})
+	lm.appendLogs()
 	if lm.lastIndex != -1 || lm.lastTerm != -1 {
 		t.Error("appendLogs should set lastIndex/lastTerm to -1")
 	}
 }
 
 func TestFindFirstConflictingEntryIndex(t *testing.T) {
-	lm := &LogManager{
+	lm := &logManager{
 		logs:          make([]LogEntry, 5),
 		snapshotIndex: -1,
 		lastIndex:     4,
@@ -433,7 +433,7 @@ func generateTestEntries(prevIndex, newTerm int) []LogEntry {
 }
 
 func TestGetLogEntries(t *testing.T) {
-	lm := &LogManager{
+	lm := &logManager{
 		lastIndex:     -1,
 		lastTerm:      -1,
 		snapshotIndex: -1,
@@ -449,7 +449,7 @@ func TestGetLogEntries(t *testing.T) {
 	}
 
 	// with 1 element available in logs
-	lm.appendLogs([]LogEntry{{Index: 0, Term: 10}})
+	lm.appendLogs(LogEntry{Index: 0, Term: 10})
 
 	entries, prevIndex, prevTerm = lm.GetLogEntries(0, 1)
 	if len(entries) != 1 {
@@ -495,9 +495,9 @@ func TestGetLogEntries(t *testing.T) {
 
 func TestSnapshot(t *testing.T) {
 	setSnapshotPathToTempDir()
-	lmSrc := NewLogMgr(100, &testStateMachine{lastApplied: 100}).(*LogManager)
+	lmSrc := newLogMgr(100, &testStateMachine{lastApplied: 100}).(*logManager)
 	smDst := &testStateMachine{}
-	lmDst := NewLogMgr(200, smDst).(*LogManager)
+	lmDst := newLogMgr(200, smDst).(*logManager)
 
 	// Take snapshot on empty state (usually won't happen)
 	testSnapshot(lmSrc, lmDst, t)
@@ -544,7 +544,7 @@ func TestSnapshot(t *testing.T) {
 	testSnapshot(lmSrc, lmDst, t)
 }
 
-func testSnapshot(lmSrc, lmDst *LogManager, t *testing.T) {
+func testSnapshot(lmSrc, lmDst *logManager, t *testing.T) {
 	lmSrc.TakeSnapshot()
 
 	snapshotIndex := lmSrc.lastApplied
@@ -554,7 +554,7 @@ func testSnapshot(lmSrc, lmDst *LogManager, t *testing.T) {
 	if err := lmSrc.TakeSnapshot(); err != nil {
 		t.Error(err)
 	}
-	if lmSrc.snapshotIndex != -1 && lmSrc.lastSnapshotFile == "" {
+	if lmSrc.snapshotIndex != -1 && lmSrc.snapshotFile == "" {
 		t.Error("Last snapshot file is not saved into log manager")
 	}
 	if lmSrc.snapshotIndex != snapshotIndex || lmSrc.snapshotTerm != snapshotTerm {
@@ -569,10 +569,10 @@ func testSnapshot(lmSrc, lmDst *LogManager, t *testing.T) {
 		return
 	}
 
-	if err := lmDst.InstallSnapshot(lmSrc.lastSnapshotFile, lmSrc.snapshotIndex, lmSrc.snapshotTerm); err != nil {
+	if err := lmDst.InstallSnapshot(lmSrc.snapshotFile, lmSrc.snapshotIndex, lmSrc.snapshotTerm); err != nil {
 		t.Error("Install snapshot failed")
 	}
-	if lmDst.lastSnapshotFile != lmSrc.lastSnapshotFile {
+	if lmDst.snapshotFile != lmSrc.snapshotFile {
 		t.Error("Last snapshot file is not set upon installSnapshot")
 	}
 	if lmDst.snapshotIndex != lmSrc.snapshotIndex || lmDst.snapshotTerm != lmSrc.snapshotTerm {

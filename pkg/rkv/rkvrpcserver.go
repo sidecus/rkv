@@ -1,36 +1,36 @@
-package kvstore
+package rkv
 
 import (
 	"context"
-	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv/pb"
+	"github.com/sidecus/raft/pkg/util"
 )
 
-// RPCServer is used to implement pb.KVStoreRPCServer
-type RPCServer struct {
-	wg     sync.WaitGroup
+// rkvRPCServer is used to implement pb.KVStoreRPCServer
+type rkvRPCServer struct {
+	wg     *sync.WaitGroup
 	node   raft.INode
 	server *grpc.Server
 	pb.UnimplementedKVStoreRaftServer
 }
 
-// NewServer creates a new RPC server
-func NewServer(node raft.INode) *RPCServer {
-	return &RPCServer{
+// newRKVRPCServer creates a new RPC server
+func newRKVRPCServer(node raft.INode, wg *sync.WaitGroup) *rkvRPCServer {
+	return &rkvRPCServer{
 		node: node,
+		wg:   wg,
 	}
 }
 
-// AppendEntries implements KVStoreRafterServer.AppendEntries
-func (s *RPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesReply, error) {
+// AppendEntries implements KVStoreRPCServer.AppendEntries
+func (s *rkvRPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesReply, error) {
 	ae := toRaftAERequest(req)
 	resp, err := s.node.AppendEntries(ctx, ae)
 
@@ -42,7 +42,7 @@ func (s *RPCServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 }
 
 // RequestVote requests a vote from the node
-func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteReply, error) {
+func (s *rkvRPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteReply, error) {
 	rv := toRaftRVRequest(req)
 	resp, err := s.node.RequestVote(ctx, rv)
 
@@ -53,36 +53,34 @@ func (s *RPCServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 	return fromRaftRVReply(resp), nil
 }
 
-// InstallSnapshot installs snapshot on current node
-// TODO[sidecus]: This keeps the reading loop out of raft and it has no idea of chunk reception (and hence no response on each chunk).
-// If the snapshot is big it might cause resending from leader
-func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
-	// create snapshot reader
-	reader, err := newGRPCSnapshotStreamReader(stream)
+// InstallSnapshot receives and installs snapshot on current node
+func (s *rkvRPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer) error {
+	// Create snapshot reader over grpc
+	recvFunc := func() (*raft.SnapshotRequestHeader, []byte, error) {
+		var pbReq *pb.SnapshotRequest
+		var err error
+		if pbReq, err = stream.Recv(); err != nil {
+			return nil, nil, err
+		}
+
+		return toRaftSnapshotRequestHeader(pbReq), pbReq.Data, nil
+	}
+	reader, err := raft.NewSnapshotStreamReader(recvFunc, s.node.OnSnapshotPart)
 	if err != nil {
 		return err
 	}
 
-	// Open snapshot file
-	req := reader.req
-	file, w, err := raft.CreateSnapshot(s.node.NodeID(), req.Term, req.SnapshotIndex, "remote")
+	// receive snapshot to file
+	req, err := raft.ReceiveSnapshot(s.node.NodeID(), reader)
 	if err != nil {
 		return err
 	}
 
-	// Copy to the file
-	defer w.Close()
-	req.File = file
-	_, err = io.Copy(w, reader)
-	if err != nil {
-		return err
-	}
-
-	// Close snapshot file and try to install
-	w.Close()
+	// Install and reply
 	var reply *raft.AppendEntriesReply
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(500)*time.Millisecond)
 	defer cancel()
+
 	if reply, err = s.node.InstallSnapshot(ctx, req); err != nil {
 		return err
 	}
@@ -91,7 +89,7 @@ func (s *RPCServer) InstallSnapshot(stream pb.KVStoreRaft_InstallSnapshotServer)
 }
 
 // Set sets a value in the kv store
-func (s *RPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetReply, error) {
+func (s *rkvRPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetReply, error) {
 	cmd := toRaftSetRequest(req)
 
 	exeCtx, cancel := context.WithCancel(ctx)
@@ -106,7 +104,7 @@ func (s *RPCServer) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetReply, 
 }
 
 // Delete deletes a value from the kv store
-func (s *RPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteReply, error) {
+func (s *rkvRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteReply, error) {
 	cmd := toRaftDeleteRequest(req)
 
 	exeCtx, cancel := context.WithCancel(ctx)
@@ -121,7 +119,7 @@ func (s *RPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Dele
 }
 
 // Get implements pb.KVStoreRaftRPCServer.Get
-func (s *RPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, error) {
+func (s *rkvRPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, error) {
 	gr := toRaftGetRequest(req)
 	resp, err := s.node.Get(ctx, gr)
 
@@ -133,25 +131,25 @@ func (s *RPCServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetReply, 
 }
 
 // Start starts the grpc server on a different go routine
-func (s *RPCServer) Start(port string) {
+func (s *rkvRPCServer) Start(port string) {
 	var opts []grpc.ServerOption
 	s.server = grpc.NewServer(opts...)
 	pb.RegisterKVStoreRaftServer(s.server, s)
 
 	s.wg.Add(1)
 	go func() {
-		lis, err := net.Listen("tcp", ":"+port)
-		if err != nil {
-			log.Fatalf("Cannot listen on port %s. Error:%s", port, err.Error())
+		if lis, err := net.Listen("tcp", ":"+port); err != nil {
+			util.Fatalf("Cannot listen on port %s. Error:%s", port, err)
+		} else if err := s.server.Serve(lis); err != nil {
+			util.Fatalf("Failed to server %ss", err)
 		}
 
-		s.server.Serve(lis)
 		s.wg.Done()
 	}()
 }
 
 // Stop stops the rpc server
-func (s *RPCServer) Stop() {
+func (s *rkvRPCServer) Stop() {
 	s.server.Stop()
 	s.wg.Wait()
 }

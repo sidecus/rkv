@@ -3,15 +3,14 @@ package raft
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const maxAppendEntriesCount = 50
-
-// errorNoLeaderAvailable means there is no leader elected yet (or at least not known to current node)
+var errorInsufficientPeers = errors.New("At least 2 peers required to make a 3 node cluster")
+var errorCurrentNodeInPeers = errors.New("current node should not exist as one of its peers")
+var errorInvalidPeerNodeID = errors.New("peer node has invalid node ID")
 var errorNoLeaderAvailable = errors.New("No leader currently available")
 
 // NodeState is the state of the node
@@ -19,11 +18,11 @@ type NodeState int
 
 const (
 	//NodeStateFollower state
-	NodeStateFollower = 1
+	NodeStateFollower = NodeState(1)
 	// NodeStateCandidate state
-	NodeStateCandidate = 2
+	NodeStateCandidate = NodeState(2)
 	// NodeStateLeader state
-	NodeStateLeader = 3
+	NodeStateLeader = NodeState(3)
 )
 
 // NodeInfo contains info for a peer node including id and endpoint
@@ -52,19 +51,26 @@ type INodeRPCProvider interface {
 
 // INode represents one raft node
 type INode interface {
-	INodeRPCProvider
-
-	NodeID() int
+	// Start starts the node
 	Start()
+
+	// Stop stops the node
 	Stop()
+
+	// NodeID returns the node's ID
+	NodeID() int
+
+	// OnSnapshotPart is invoked when receiving a snapshot part (full snapshot might still be pending)
+	OnSnapshotPart(part *SnapshotRequestHeader) bool
+
+	// Node RPC functions
+	INodeRPCProvider
 }
 
-// node A raft node
+// node define struct for a raft node implementing INode interface
 type node struct {
-	// node lock
 	mu sync.RWMutex
 
-	// data for all states
 	clusterSize   int
 	nodeID        int
 	nodeState     NodeState
@@ -74,24 +80,15 @@ type node struct {
 	votes         map[int]bool // resets when entering candidate state
 	logMgr        ILogManager
 	peerMgr       IPeerManager
-
-	// timer
-	timer IRaftTimer
+	timer         IRaftTimer
 }
 
 // NewNode creates a new node
-func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) INode {
+func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory IPeerProxyFactory) (INode, error) {
+	if err := validateCluster(nodeID, peers); err != nil {
+		return nil, err
+	}
 	size := len(peers) + 1
-	if size < 3 {
-		util.Panicf("To few nodes. Total count: %d", size)
-	}
-
-	// TODO[sidecus]: Allow passing snapshot path as parameter instead of using current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		util.Panicf("Failed to get current working directory for snapshot. %s", err)
-	}
-	SetSnapshotPath(cwd)
 
 	n := &node{
 		mu:            sync.RWMutex{},
@@ -102,13 +99,30 @@ func NewNode(nodeID int, peers map[int]NodeInfo, sm IStateMachine, proxyFactory 
 		currentLeader: -1,
 		votedFor:      -1,
 		votes:         make(map[int]bool, size),
-		logMgr:        NewLogMgr(nodeID, sm),
+		logMgr:        newLogMgr(nodeID, sm),
 	}
 
-	n.timer = NewRaftTimer(n.onTimer)
-	n.peerMgr = NewPeerManager(nodeID, peers, n.replicateData, proxyFactory)
+	n.timer = newRaftTimer(n.onTimer)
+	n.peerMgr = newPeerManager(peers, n.replicateData, proxyFactory)
 
-	return n
+	return n, nil
+}
+
+// validateCluster validates params for the raft cluster
+func validateCluster(nodeID int, peers map[int]NodeInfo) error {
+	if len(peers) < 2 {
+		return errorInsufficientPeers
+	}
+
+	for i, p := range peers {
+		if p.NodeID == nodeID {
+			return errorCurrentNodeInPeers
+		} else if p.NodeID != i {
+			return errorInvalidPeerNodeID
+		}
+	}
+
+	return nil
 }
 
 // NodeID gets the node's id
@@ -122,12 +136,11 @@ func (n *node) Start() {
 	defer n.mu.Unlock()
 
 	util.WriteInfo("Node%d starting...", n.nodeID)
+	n.timer.start()
+	n.peerMgr.start()
 
 	// Enter follower state
-	n.timer.Start()
-	n.peerMgr.Start()
 	n.enterFollowerState(n.nodeID, 0)
-	n.refreshTimer()
 }
 
 // Stop stops a node
@@ -135,28 +148,26 @@ func (n *node) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	n.timer.Stop()
-	n.peerMgr.Stop()
+	n.timer.stop()
+	n.peerMgr.stop()
 }
 
 // Get gets values from state machine, no need to proxy
-func (n *node) Get(ctx context.Context, req *GetRequest) (*GetReply, error) {
-	// We don't need lock on the node since we are only accessing its logMgr property which never changes after startup.
-	// However, this means the downstream component (statemachine) must implement proper locking. Our KVStore for exmaple, does it.
-	// n.mu.RLock()
-	// defer n.mu.RUnlock()
+func (n *node) Get(ctx context.Context, req *GetRequest) (result *GetReply, err error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
-	var result *GetReply = nil
-
-	ret, err := n.logMgr.Get(req.Params...)
-	if err == nil {
-		result = &GetReply{
-			NodeID: n.nodeID,
-			Data:   ret,
-		}
+	var ret interface{}
+	if ret, err = n.logMgr.Get(req.Params...); err != nil {
+		return
 	}
 
-	return result, err
+	result = &GetReply{
+		NodeID: n.nodeID,
+		Data:   ret,
+	}
+
+	return
 }
 
 // Execute runs a command via the raft node
@@ -168,16 +179,17 @@ func (n *node) Execute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply
 	leader := n.currentLeader
 	n.mu.RUnlock()
 
-	if state != NodeStateLeader {
-		// We are not the leader, proxy to leader if we know who it is, or return error
-		// otherwise we might have a deadlock between this and the leader when processing AppendEntries
-		if leader == -1 {
-			return nil, errorNoLeaderAvailable
-		}
-		return n.peerMgr.GetPeer(leader).Execute(ctx, cmd)
+	switch {
+	case leader == -1:
+		// no leader available now, error out
+		return nil, errorNoLeaderAvailable
+	case state != NodeStateLeader:
+		// We are not the leader, proxy to leader
+		return n.peerMgr.getPeer(leader).Execute(ctx, cmd)
+	default:
+		// we are the leader
+		return n.leaderExecute(ctx, cmd)
 	}
-
-	return n.leaderExecute(ctx, cmd)
 }
 
 // AppendEntries handles raft RPC AE calls
@@ -217,7 +229,6 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 	n.tryFollowNewTerm(req.LeaderID, req.Term, true)
 
 	// After above call, n.currentLeader has been updated accordingly if req.Term is the same or higher
-
 	success := false
 	lastMatchIndex := req.SnapshotIndex
 	if req.Term >= n.currentTerm {
@@ -227,11 +238,10 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 		} else {
 			// only process logs when term is valid
 			util.WriteInfo("T%d: Node%d installing T%dL%d snapshot from Node%d\n", n.currentTerm, n.nodeID, req.SnapshotTerm, req.SnapshotIndex, req.LeaderID)
-			err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm)
-			if err == nil {
-				success = true
-			} else {
+			if err := n.logMgr.InstallSnapshot(req.File, req.SnapshotIndex, req.SnapshotTerm); err != nil {
 				util.WriteError("T%d: Install snapshot failed. %s\n", n.currentTerm, err)
+			} else {
+				success = true
 			}
 		}
 	}
@@ -244,6 +254,15 @@ func (n *node) InstallSnapshot(ctx context.Context, req *SnapshotRequest) (*Appe
 		LastMatch: lastMatchIndex,
 	}, nil
 
+}
+
+// OnSnapshotPart is invoked when a snapshot part is received. Returns false if we don't want to continue (e.g. lower term)
+func (n *node) OnSnapshotPart(part *SnapshotRequestHeader) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Teated in the same way as AE request
+	return n.tryFollowNewTerm(part.LeaderID, part.Term, true)
 }
 
 // RequestVote handles raft RPC RV calls
@@ -294,11 +313,15 @@ func (n *node) onTimer(state NodeState, term int) {
 }
 
 // enter follower state and follows new leader (or potential leader)
+// also resets vote timer
 func (n *node) enterFollowerState(sourceNodeID, newTerm int) {
 	oldLeader := n.currentLeader
 	n.nodeState = NodeStateFollower
 	n.currentLeader = sourceNodeID
 	n.setTerm(newTerm)
+
+	// refresh timer
+	n.refreshTimer()
 
 	if n.nodeID != sourceNodeID && oldLeader != n.currentLeader {
 		util.WriteInfo("T%d: Node%d follows Node%d on new Term\n", n.currentTerm, n.nodeID, sourceNodeID)
@@ -316,31 +339,25 @@ func (n *node) enterCandidateState() {
 	n.votes = make(map[int]bool, n.clusterSize)
 	n.votes[n.nodeID] = true
 
+	// reset timer
+	n.refreshTimer()
+
 	util.WriteInfo("T%d: \u270b Node%d starts election\n", n.currentTerm, n.nodeID)
 }
 
 // start an election
 func (n *node) startElection() {
-	elect := n.prepareElection()
-	replies := elect()
-	n.handleRequestVoteReplies(replies)
-
-	// Check vote result and switch to leader as appropriate
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.wonElection() {
-		n.enterLeaderState()
-		n.sendHeartbeat()
-	}
+	runCampaign := n.prepareCampaign()
+	votes := runCampaign()
+	n.countVotes(votes)
 }
 
 // prepare election prepares node for election and returns a elect func
-func (n *node) prepareElection() func() <-chan *RequestVoteReply {
+func (n *node) prepareCampaign() func() <-chan *RequestVoteReply {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	n.enterCandidateState()
-	n.refreshTimer()
 
 	req := &RequestVoteRequest{
 		Term:         n.currentTerm,
@@ -349,27 +366,32 @@ func (n *node) prepareElection() func() <-chan *RequestVoteReply {
 		LastLogTerm:  n.logMgr.LastTerm(),
 	}
 
+	currentTerm := n.currentTerm
+
 	return func() <-chan *RequestVoteReply {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
+
 		rvReplies := make(chan *RequestVoteReply, n.clusterSize)
-		n.peerMgr.WaitAllPeers(func(peer *Peer, wg *sync.WaitGroup) {
+		defer close(rvReplies)
+
+		n.peerMgr.waitAll(func(peer *Peer, wg *sync.WaitGroup) {
 			go func() {
 				reply, err := peer.RequestVote(ctx, req)
 				if err == nil {
-					util.WriteInfo("T%d: Vote reply from Node%d, granted:%v\n", n.currentTerm, reply.NodeID, reply.VoteGranted)
+					util.WriteInfo("T%d: Vote reply from Node%d, granted:%v\n", currentTerm, reply.NodeID, reply.VoteGranted)
 					rvReplies <- reply
 				}
 				wg.Done()
 			}()
 		})
-		close(rvReplies)
+
 		return rvReplies
 	}
 }
 
-// handleRequestVoteReplies processes RV replies
-func (n *node) handleRequestVoteReplies(replies <-chan *RequestVoteReply) {
+// countVotes processes RV replies
+func (n *node) countVotes(replies <-chan *RequestVoteReply) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -387,6 +409,11 @@ func (n *node) handleRequestVoteReplies(replies <-chan *RequestVoteReply) {
 		// record and count votes
 		n.votes[reply.NodeID] = true
 	}
+
+	// enter leader state if won
+	if n.wonElection() {
+		n.enterLeaderState()
+	}
 }
 
 // Check peer's term and follow if needed. This will be called upon all RPC request and responses.
@@ -399,13 +426,12 @@ func (n *node) tryFollowNewTerm(sourceNodeID, newTerm int, isAppendEntries bool)
 		util.WriteInfo("T%d: Received new term from Node%d, newTerm:%d.\n", n.currentTerm, sourceNodeID, newTerm)
 		follow = true
 	} else if newTerm == n.currentTerm && isAppendEntries {
-		// For AE calls, we should follow even term is the same
+		// For AE calls, we should (re)follow when term is the same
 		follow = true
 	}
 
 	if follow {
 		n.enterFollowerState(sourceNodeID, newTerm)
-		n.refreshTimer()
 	}
 
 	return follow
@@ -417,7 +443,7 @@ func (n *node) commitTo(targetCommitIndex int) {
 	if newCommit, newSnapshot := n.logMgr.CommitAndApply(targetCommitIndex); newCommit {
 		util.WriteTrace("T%d: Node%d committed to L%d\n", n.currentTerm, n.nodeID, n.logMgr.CommitIndex())
 		if newSnapshot {
-			util.WriteInfo("T%d: Node%d created new snapshot L%d_T%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotIndex(), n.logMgr.SnapshotTerm())
+			util.WriteInfo("T%d: Node%d created new snapshot T%dL%d\n", n.currentTerm, n.nodeID, n.logMgr.SnapshotTerm(), n.logMgr.SnapshotIndex())
 		}
 	}
 }
@@ -449,5 +475,5 @@ func (n *node) setTerm(newTerm int) {
 
 // Refreshes timer based on current state
 func (n *node) refreshTimer() {
-	n.timer.Reset(n.nodeState, n.currentTerm)
+	n.timer.reset(n.nodeState, n.currentTerm)
 }

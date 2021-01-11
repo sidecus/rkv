@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sidecus/raft/pkg/kvstore/pb"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 	"google.golang.org/grpc"
 )
 
@@ -19,87 +19,53 @@ func benchmark(conn *grpc.ClientConn, times int) {
 		os.Exit(1)
 	}
 
-	fmt.Print("=====================================================\n")
-	fmt.Printf("Benchmark with 1 connection, %d concurrent clients:\n", clients)
+	fmt.Print("==================================\n")
+	fmt.Printf("Benchmark with:\n%3d grpc connection\n%3d concurrent clients\n", 1, clients)
+	fmt.Print("==================================\n")
 
 	benchmarkSet(conn, times)
 	benchmarkGet(conn, times)
 }
 
-func benchmarkGet(conn *grpc.ClientConn, total int) {
-	duration, results := batch(total, clients, func(start int, count int) (result batchResult) {
-		if count <= 0 {
-			return
-		}
-
-		result.total = count
-		client := pb.NewKVStoreRaftClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-
-		tstart := time.Now()
-		for i := start; i < start+count; i++ {
-			ret, err := client.Get(ctx, &pb.GetRequest{Key: fmt.Sprintf("k%d", i)})
-			if err == nil && ret.Success && ret.Value == fmt.Sprint(i) {
-				result.successcnt++
-			} else {
-				fmt.Printf("Set didn't succeed for k%d\n", i)
-			}
-		}
-		result.duration = time.Now().Sub(tstart)
-		return
+func benchmarkSet(conn *grpc.ClientConn, total int) {
+	duration, results := measureBatches(conn, total, clients, func(ctx context.Context, client pb.KVStoreRaftClient, i int) bool {
+		r, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
+		return err == nil && r.Success
 	})
 
-	var final batchResult
+	var aggr batchResult
 	for v := range results {
-		final.total += v.total
-		final.duration += v.duration
-		final.successcnt += v.successcnt
+		aggr.total += v.total
+		aggr.duration += v.duration
+		aggr.successcnt += v.successcnt
 	}
 
-	fmt.Print("GET\n")
-	fmt.Printf("  Total get calls     : %d\n", final.total)
-	fmt.Printf("  Total get success   : %d\n", final.successcnt)
-	fmt.Printf("  Total time taken    : %dms\n", duration/time.Millisecond)
-	fmt.Printf("  Average get latency : %dms\n", final.duration/time.Millisecond/time.Duration(total))
+	printResult("Set", duration, aggr)
 }
 
-func benchmarkSet(conn *grpc.ClientConn, total int) {
-	duration, results := batch(total, clients, func(start int, count int) (result batchResult) {
-		if count <= 0 {
-			return
-		}
-
-		result.total = count
-
-		client := pb.NewKVStoreRaftClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-
-		tstart := time.Now()
-		for i := start; i < start+count; i++ {
-			r, err := client.Set(ctx, &pb.SetRequest{Key: fmt.Sprintf("k%d", i), Value: fmt.Sprint(i)})
-			if err == nil && r.Success {
-				result.successcnt++
-			}
-		}
-		result.duration = time.Now().Sub(tstart)
-		return
+func benchmarkGet(conn *grpc.ClientConn, total int) {
+	duration, results := measureBatches(conn, total, clients, func(ctx context.Context, client pb.KVStoreRaftClient, i int) bool {
+		ret, err := client.Get(ctx, &pb.GetRequest{Key: fmt.Sprintf("k%d", i)})
+		return err == nil && ret.Success && ret.Value == fmt.Sprint(i)
 	})
 
-	var final batchResult
+	var aggr batchResult
 	for v := range results {
-		final.total += v.total
-		final.duration += v.duration
-		final.successcnt += v.successcnt
+		aggr.total += v.total
+		aggr.duration += v.duration
+		aggr.successcnt += v.successcnt
 	}
 
-	fmt.Print("SET\n")
-	fmt.Printf("  Total set clients   : %d\n", clients)
-	fmt.Printf("  Total set calls     : %d\n", final.total)
-	fmt.Printf("  Total set success   : %d\n", final.successcnt)
-	fmt.Printf("  Total time taken    : %d ms\n", duration/time.Millisecond)
-	fmt.Printf("  Average set latency : %d ms\n", final.duration*1.0/time.Millisecond/time.Duration(final.total))
+	printResult("Get", duration, aggr)
+}
+
+func printResult(op string, totalDuration time.Duration, aggregated batchResult) {
+	fmt.Printf("%s\n", op)
+	fmt.Printf("  Total %s calls     : %d\n", op, aggregated.total)
+	fmt.Printf("  Total %s success   : %d\n", op, aggregated.successcnt)
+	fmt.Printf("  %s success rate    : %.2f%%\n", op, float64(aggregated.successcnt)*100/float64(aggregated.total))
+	fmt.Printf("  Total time taken    : %dms\n", totalDuration/time.Millisecond)
+	fmt.Printf("  Average %s latency : %dms\n", op, aggregated.duration/time.Millisecond/time.Duration(aggregated.total))
 }
 
 type batchResult struct {
@@ -108,11 +74,11 @@ type batchResult struct {
 	duration   time.Duration
 }
 
-type batchFn func(start int, count int) batchResult
+type execFn func(ctx context.Context, client pb.KVStoreRaftClient, i int) bool
 
-// run something for "total" times in "batches".
-// each batch is run in a separate go routine
-func batch(total int, batches int, fn batchFn) (time.Duration, <-chan batchResult) {
+// run the rpc based execFn for "total" times in "batches".
+// each batch is run in a separate goroutine
+func measureBatches(conn *grpc.ClientConn, total int, batches int, fn execFn) (time.Duration, <-chan batchResult) {
 	batchsize := (total + batches - 1) / batches
 
 	results := make(chan batchResult, batches)
@@ -121,7 +87,6 @@ func batch(total int, batches int, fn batchFn) (time.Duration, <-chan batchResul
 	start := time.Now()
 	var wg sync.WaitGroup
 	for i := 0; i < batches; i++ {
-		wg.Add(1)
 		start, count := i*batchsize, batchsize
 		if start > total {
 			count = 0
@@ -129,8 +94,30 @@ func batch(total int, batches int, fn batchFn) (time.Duration, <-chan batchResul
 			count = total - start
 		}
 
+		wrapperFn := func() (result batchResult) {
+			if count <= 0 {
+				return
+			}
+
+			client := pb.NewKVStoreRaftClient(conn)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
+			tstart := time.Now()
+			for i := start; i < start+count; i++ {
+				if fn(ctx, client, i) {
+					result.successcnt++
+				}
+			}
+
+			result.duration = time.Now().Sub(tstart)
+			result.total = count
+			return
+		}
+
+		wg.Add(1)
 		go func() {
-			results <- fn(start, count)
+			results <- wrapperFn()
 			wg.Done()
 		}()
 	}

@@ -4,11 +4,8 @@ import (
 	"github.com/sidecus/raft/pkg/util"
 )
 
-const nextIndexFallbackStep = 20
-
-// Set batcher queue size to be the same as max entries per request
-// Batcher queue size also controls our max Execute request concurrency
-const batcherQueueSize = maxAppendEntriesCount
+const nextIndexFallbackStep = 1
+const maxAppendEntriesCount = 64
 
 // Peer wraps information for a raft Peer as well as the RPC proxy
 type Peer struct {
@@ -16,33 +13,49 @@ type Peer struct {
 	nextIndex  int
 	matchIndex int
 
-	*Batcher
+	*batchReplicator
 	IPeerProxy
 }
 
-// NewPeer creats a new peer
-func NewPeer(info NodeInfo, replicate func() int, factory IPeerProxyFactory) *Peer {
-	return &Peer{
-		NodeInfo:   info,
-		nextIndex:  0,
-		matchIndex: -1,
-		Batcher:    NewBatcher(replicate, batcherQueueSize),
-		IPeerProxy: factory.NewPeerProxy(info),
-	}
-}
-
-// HasMatch tells us whether we have found a matching entry for the given follower
-func (p *Peer) HasMatch() bool {
+// hasMatch tells us whether we have found a matching entry for the given follower
+func (p *Peer) hasMatch() bool {
 	return p.matchIndex+1 == p.nextIndex
 }
 
-// HasMoreToReplicate tells us whether there are more to replicate for this follower
-func (p *Peer) HasMoreToReplicate(lastIndex int) bool {
-	return p.matchIndex < lastIndex
+// get next index and entry count for next replication
+func (p *Peer) getReplicationParams() (nextIndex int, entryCount int) {
+	nextIndex = p.nextIndex
+	entryCount = maxAppendEntriesCount
+	if !p.hasMatch() {
+		// no need for any payload if we haven't got a match yet
+		entryCount = 0
+	}
+	return
 }
 
-// UpdateMatchIndex updates match index for a given node
-func (p *Peer) UpdateMatchIndex(match bool, lastMatch int) {
+// should we send a snapshot
+func (p *Peer) shouldSendSnapshot(snapshotIndex int) bool {
+	return p.nextIndex <= snapshotIndex
+}
+
+// upToDate tells us whether follower is up to date with given index
+func (p *Peer) upToDate(lastIndex int) bool {
+	return p.matchIndex >= lastIndex
+}
+
+// hasConsensus checks whether current peer has consensus upon the given log index
+func (p *Peer) hasConsensus(logIndex int) bool {
+	return p.matchIndex >= logIndex
+}
+
+// reset follower index based on last index
+func (p *Peer) resetFollowerIndex(lastLogIndex int) {
+	p.nextIndex = lastLogIndex + 1
+	p.matchIndex = -1
+}
+
+// updateMatchIndex updates match index for a given node
+func (p *Peer) updateMatchIndex(match bool, lastMatch int) {
 	if match {
 		if p.matchIndex < lastMatch {
 			util.WriteVerbose("Updating Node%d's nextIndex. lastMatch %d", p.NodeID, lastMatch)

@@ -35,12 +35,17 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// SnapshotRequest reprents a chunk of snapshot
-type SnapshotRequest struct {
+// SnapshotRequestHeader defines headers for a snapshot
+type SnapshotRequestHeader struct {
 	Term          int
 	LeaderID      int
 	SnapshotIndex int
 	SnapshotTerm  int
+}
+
+// SnapshotRequest reprents a snapshot request, with a file containing the snapshot data
+type SnapshotRequest struct {
+	SnapshotRequestHeader
 	// below field differs from the RPC request which is a byte array
 	File string
 }

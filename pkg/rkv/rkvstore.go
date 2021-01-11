@@ -1,4 +1,4 @@
-package kvstore
+package rkv
 
 import (
 	"encoding/json"
@@ -28,22 +28,22 @@ type KVCmdData struct {
 	Value string
 }
 
-// KVStore is a concurrency safe kv store
-type KVStore struct {
+// rkvStore is a concurrency safe kv store
+type rkvStore struct {
 	mu   sync.RWMutex
 	data map[string]string
 }
 
-// NewKVStore creates a kv store
-func NewKVStore() *KVStore {
-	store := &KVStore{
+// newRKVStore creates a kv store
+func newRKVStore() *rkvStore {
+	store := &rkvStore{
 		data: make(map[string]string),
 	}
 	return store
 }
 
 // Apply applies the cmd to the kv store with concurrency safety
-func (store *KVStore) Apply(cmd raft.StateMachineCmd) {
+func (store *rkvStore) Apply(cmd raft.StateMachineCmd) {
 	if cmd.CmdType != KVCmdSet && cmd.CmdType != KVCmdDel {
 		util.Panicf("Unexpected kv cmdtype %d", cmd.CmdType)
 	}
@@ -60,7 +60,7 @@ func (store *KVStore) Apply(cmd raft.StateMachineCmd) {
 }
 
 // Get Implements IStateMachine.Get
-func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) {
+func (store *rkvStore) Get(param ...interface{}) (result interface{}, err error) {
 	if len(param) != 1 {
 		return nil, errorNoKeyProvidedForGet
 	}
@@ -77,7 +77,7 @@ func (store *KVStore) Get(param ...interface{}) (result interface{}, err error) 
 }
 
 // Serialize implements IStateMachine.TakeSnapshot
-func (store *KVStore) Serialize(w io.Writer) error {
+func (store *rkvStore) Serialize(w io.Writer) error {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
@@ -86,7 +86,7 @@ func (store *KVStore) Serialize(w io.Writer) error {
 }
 
 // Deserialize installs a snapshot, it implements IStateMachine.InstallSnapshot
-func (store *KVStore) Deserialize(reader io.Reader) error {
+func (store *rkvStore) Deserialize(reader io.Reader) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 

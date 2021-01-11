@@ -60,23 +60,23 @@ func createTestPeerInfo(n int) map[int]NodeInfo {
 }
 
 func createTestPeerManager(size int) IPeerManager {
-	replicateFunc := func(x int) int { return x }
+	replicateFunc := func(p *Peer) int { return 3 }
 	peers := createTestPeerInfo(size)
-	peerMgr := NewPeerManager(size, peers, replicateFunc, &MockPeerFactory{})
+	peerMgr := newPeerManager(peers, replicateFunc, &MockPeerFactory{})
 
 	return peerMgr
 }
 
 func TestNewPeerManager(t *testing.T) {
 	size := 5
-	peerManager := createTestPeerManager(size).(*PeerManager)
+	peerMgr := createTestPeerManager(size).(*peerManager)
 
-	if len(peerManager.Peers) != size {
+	if len(peerMgr.peers) != size {
 		t.Error("PeerManager created with wrong number of peers")
 	}
 
 	for i := 0; i < size; i++ {
-		p := peerManager.GetPeer(i)
+		p := peerMgr.getPeer(i)
 		if p.NodeID != i {
 			t.Error("peer node id is not initialized correctly")
 		}
@@ -87,23 +87,23 @@ func TestNewPeerManager(t *testing.T) {
 }
 
 func TestResetFollowerIndicies(t *testing.T) {
-	mgr := createTestPeerManager(3).(*PeerManager)
-	mgr.GetPeer(0).nextIndex = 5
-	mgr.GetPeer(0).matchIndex = 3
-	mgr.GetPeer(1).nextIndex = 10
-	mgr.GetPeer(1).matchIndex = 9
-	mgr.GetPeer(2).nextIndex = 6
-	mgr.GetPeer(2).matchIndex = -1
+	mgr := createTestPeerManager(3).(*peerManager)
+	mgr.getPeer(0).nextIndex = 5
+	mgr.getPeer(0).matchIndex = 3
+	mgr.getPeer(1).nextIndex = 10
+	mgr.getPeer(1).matchIndex = 9
+	mgr.getPeer(2).nextIndex = 6
+	mgr.getPeer(2).matchIndex = -1
 
-	mgr.ResetFollowerIndicies(20)
-	for _, p := range mgr.Peers {
+	mgr.resetFollowerIndicies(20)
+	for _, p := range mgr.peers {
 		if p.nextIndex != 21 || p.matchIndex != -1 {
 			t.Fatal("reset doesn't reset on positive last index")
 		}
 	}
 
-	mgr.ResetFollowerIndicies(-1)
-	for _, p := range mgr.Peers {
+	mgr.resetFollowerIndicies(-1)
+	for _, p := range mgr.peers {
 		if p.nextIndex != 0 || p.matchIndex != -1 {
 			t.Fatal("reset doesn't reset on -1 as last index")
 		}
@@ -111,16 +111,16 @@ func TestResetFollowerIndicies(t *testing.T) {
 }
 
 func TestQuorumReached(t *testing.T) {
-	mgr := createTestPeerManager(2).(*PeerManager)
+	mgr := createTestPeerManager(2)
 
-	follower0 := mgr.GetPeer(0)
-	follower1 := mgr.GetPeer(1)
+	follower0 := mgr.getPeer(0)
+	follower1 := mgr.getPeer(1)
 
-	if !mgr.QuorumReached(-1) {
+	if !mgr.quorumReached(-1) {
 		t.Error("QuorumReached fails on -1 when should be")
 	}
 
-	if mgr.QuorumReached(0) {
+	if mgr.quorumReached(0) {
 		t.Error("QuorumReached returns true on 0 when it should not")
 	}
 
@@ -129,7 +129,7 @@ func TestQuorumReached(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		expected := i <= 6
-		result := mgr.QuorumReached(i)
+		result := mgr.quorumReached(i)
 
 		if expected != result {
 			t.Errorf("QuorumReached failed on index %d", i)

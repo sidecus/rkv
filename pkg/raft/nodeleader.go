@@ -20,120 +20,108 @@ func (n *node) enterLeaderState() {
 	n.currentLeader = n.nodeID
 
 	// reset all follower's indicies
-	n.peerMgr.ResetFollowerIndicies(n.logMgr.LastIndex())
+	n.peerMgr.resetFollowerIndicies(n.logMgr.LastIndex())
+
+	// send heartbeat (which also resets timer)
+	n.sendHeartbeat()
 
 	util.WriteInfo("T%d: \U0001f451 Node%d won election\n", n.currentTerm, n.nodeID)
 }
 
-// send heartbeat. This is concurrency safe and we don't need locking.
+// send heartbeat. This is non blocking
 func (n *node) sendHeartbeat() {
-	for _, p := range n.peerMgr.GetPeers() {
-		p.RequestProcess()
-	}
-
-	// 5.2 - refresh timer
+	n.peerMgr.tryReplicateAll()
 	n.refreshTimer()
 }
 
 // replicateData replicates data to follower. It replicates snapshot or next batch of logs to the follower.
 // If nothing more to replicate, it'll send message with empty payload.
-// This is called in the replication goroutine for each follower
-func (n *node) replicateData(followerID int) int {
-	replicate := n.prepareReplication(followerID)
-	if reply, err := replicate(); err != nil {
-		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, followerID, err)
-	} else {
-		n.handleReplicationReply(reply)
+// This is called in the replication goroutine for each follower, and can be triggered via three cases:
+// 1. heartbeat
+// 2. leader execute propogating entries
+// 3. backfilling follower
+func (n *node) replicateData(follower *Peer) int {
+	doReplicate := n.prepareReplication(follower)
+	reply, err := doReplicate()
+
+	if err != nil {
+		util.WriteTrace("T%d: Failed to replicate data to Node%d. %s", n.currentTerm, follower.NodeID, err)
+		reply = nil
 	}
 
-	return n.peerMgr.GetPeer(followerID).matchIndex
+	return n.processReplicationResult(follower, reply)
 }
 
 // prepareReplication prepares replication for the given node.
-// We need reader lock on node
-func (n *node) prepareReplication(followerID int) func() (*AppendEntriesReply, error) {
+func (n *node) prepareReplication(follower *Peer) func() (*AppendEntriesReply, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
 	if n.nodeState != NodeStateLeader {
-		return func() (*AppendEntriesReply, error) {
-			return nil, errNoLongerLeader
-		}
+		return func() (*AppendEntriesReply, error) { return nil, errNoLongerLeader }
 	}
 
-	follower := n.peerMgr.GetPeer(followerID)
 	currentTerm := n.currentTerm
-	snapshotIndex := n.logMgr.SnapshotIndex()
 
 	// Snapshot scenario
-	if follower.nextIndex <= snapshotIndex {
+	if follower.shouldSendSnapshot(n.logMgr.SnapshotIndex()) {
 		req := n.createSnapshotRequest()
 		return func() (*AppendEntriesReply, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), rpcSnapshotTimeout)
 			defer cancel()
-			util.WriteTrace("T%d: Sending snapshot to Node%d (L%d)\n", currentTerm, follower.NodeID, snapshotIndex)
+
+			util.WriteTrace("T%d: Sending snapshot to Node%d (T%dL%d)\n", currentTerm, follower.NodeID, req.SnapshotTerm, req.SnapshotIndex)
 			return follower.InstallSnapshot(ctx, req)
 		}
 	}
 
 	// Pure logs
-	entryCount := maxAppendEntriesCount
-	if !follower.HasMatch() {
-		entryCount = 0
-	}
-	req := n.createAERequest(follower.nextIndex, entryCount)
+	nextIndex, entryCount := follower.getReplicationParams()
+	req := n.createAERequest(nextIndex, entryCount)
 	return func() (*AppendEntriesReply, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeOut)
 		defer cancel()
-		util.WriteVerbose("T%d: Sending replication request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
+
+		util.WriteVerbose("T%d: Sending AE request to Node%d. prevIndex: %d, prevTerm: %d, entryCnt: %d\n", currentTerm, follower.NodeID, req.PrevLogIndex, req.PrevLogTerm, len(req.Entries))
 		return follower.AppendEntries(ctx, req)
 	}
 }
 
-// handleReplicationReply handles append entries reply for replications.
-// Need writer lock
-func (n *node) handleReplicationReply(reply *AppendEntriesReply) {
+// processReplicationResult handles append entries reply for replications.
+// returns lastMatchIndex, or -1 if there is any "error"
+func (n *node) processReplicationResult(follower *Peer, reply *AppendEntriesReply) int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if reply == nil {
+		return follower.matchIndex
+	}
+
+	if follower.NodeID != reply.NodeID {
+		util.Panicf("AE reply has different node id %d, expected %d", reply.NodeID, follower.NodeID)
+	}
+
 	if n.tryFollowNewTerm(reply.LeaderID, reply.Term, false) {
-		return
+		return -1
 	}
 
 	if n.nodeState != NodeStateLeader {
-		return
+		return -1
 	}
-
-	follower := n.peerMgr.GetPeer(reply.NodeID)
 
 	// 5.3 update follower indicies based on reply and last match index info from the reply
+	follower.updateMatchIndex(reply.Success, reply.LastMatch)
+
 	// Then check whether there are logs to commit
-	follower.UpdateMatchIndex(reply.Success, reply.LastMatch)
 	newCommit := reply.Success && n.leaderCommit()
 
-	// replicate more if there is remaining data, or there is a new commit
-	// Use TryTriggerProcess here which is non blocking to avoid potential deadlock when queue is full
-	if follower.HasMoreToReplicate(n.logMgr.LastIndex()) || newCommit {
-		follower.RequestProcess()
+	// request more replication if there is new commit or data remaining
+	if newCommit || !follower.upToDate(n.logMgr.LastIndex()) {
+		// Use non blocking TryRequestReplicate to avoid potential deadlock when queue is full
+		follower.tryRequestReplicate(nil)
 	}
-}
 
-// Execute a cmd and propogate it to followers
-func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
-	n.mu.Lock()
-	n.logMgr.ProcessCmd(*cmd, n.currentTerm)
-	targetIndex := n.logMgr.LastIndex()
-	n.mu.Unlock()
-
-	// Try to replicate new entry to all followers
-	n.peerMgr.WaitAllPeers(func(p *Peer, wg *sync.WaitGroup) {
-		p.RequestProcessTo(targetIndex, wg)
-	})
-
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	success := n.logMgr.CommitIndex() >= targetIndex
-	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
+	return follower.matchIndex
 }
 
 // leaderCommit commits to the last entry with quorum
@@ -149,12 +137,12 @@ func (n *node) leaderCommit() bool {
 			// A leader shall only commit entries added by itself, and term is the indication of ownership
 			break
 		} else if entry.Term > n.currentTerm {
-			// This will never happen, adding for safety purpose
+			util.Panicln("entry term is larger than leader's current term")
 			continue
 		}
 
 		// If we reach here, we can safely declare sole ownership of the ith entry
-		if n.peerMgr.QuorumReached(i) {
+		if n.peerMgr.quorumReached(i) {
 			commitIndex = i
 			break
 		}
@@ -169,14 +157,32 @@ func (n *node) leaderCommit() bool {
 	return false
 }
 
+// Execute a cmd and propogate it to followers.
+// This will trigger replicateData for all followers and wait for them to finish
+func (n *node) leaderExecute(ctx context.Context, cmd *StateMachineCmd) (*ExecuteReply, error) {
+	n.mu.Lock()
+	targetIndex := n.logMgr.ProcessCmd(*cmd, n.currentTerm)
+	n.mu.Unlock()
+
+	// Try to replicate new entry to all followers
+	n.peerMgr.waitAll(func(p *Peer, wg *sync.WaitGroup) {
+		p.requestReplicateTo(targetIndex, wg)
+	})
+
+	success := n.logMgr.CommitIndex() >= targetIndex
+	return &ExecuteReply{NodeID: n.nodeID, Success: success}, nil
+}
+
 // createAERequest creates an AppendEntriesRequest with proper log payload
-func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
-	// make sure nextIdx is larger than n.logMgr.SnapshotIndex()
-	// nextIdx <= n.logMgr.SnapshotIndex() will cause panic on log entry retrieval.
-	startIdx := util.Max(nextIdx, n.logMgr.SnapshotIndex()+1)
+func (n *node) createAERequest(startIdx int, maxCnt int) *AppendEntriesRequest {
+	// make sure startIdx is larger than snapshotIndex, and endIdx is smaller or equal to lastIndex
+	startIdx = util.Max(startIdx, n.logMgr.SnapshotIndex()+1)
 	endIdx := util.Min(n.logMgr.LastIndex()+1, startIdx+maxCnt)
 
-	entries, prevIdx, prevTerm := n.logMgr.GetLogEntries(startIdx, endIdx)
+	// Get log entries and make a copy of them
+	logs, prevIdx, prevTerm := n.logMgr.GetLogEntries(startIdx, endIdx)
+	entries := make([]LogEntry, len(logs))
+	copy(entries, logs)
 
 	req := &AppendEntriesRequest{
 		Term:         n.currentTerm,
@@ -193,10 +199,12 @@ func (n *node) createAERequest(nextIdx int, maxCnt int) *AppendEntriesRequest {
 // createSnapshotRequest creates a snapshot request to send to follower
 func (n *node) createSnapshotRequest() *SnapshotRequest {
 	return &SnapshotRequest{
-		Term:          n.currentTerm,
-		LeaderID:      n.nodeID,
-		SnapshotIndex: n.logMgr.SnapshotIndex(),
-		SnapshotTerm:  n.logMgr.SnapshotTerm(),
-		File:          n.logMgr.SnapshotFile(),
+		SnapshotRequestHeader: SnapshotRequestHeader{
+			Term:          n.currentTerm,
+			LeaderID:      n.nodeID,
+			SnapshotIndex: n.logMgr.SnapshotIndex(),
+			SnapshotTerm:  n.logMgr.SnapshotTerm(),
+		},
+		File: n.logMgr.SnapshotFile(),
 	}
 }

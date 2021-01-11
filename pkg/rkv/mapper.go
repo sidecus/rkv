@@ -1,8 +1,8 @@
-package kvstore
+package rkv
 
 import (
-	"github.com/sidecus/raft/pkg/kvstore/pb"
 	"github.com/sidecus/raft/pkg/raft"
+	"github.com/sidecus/raft/pkg/rkv/pb"
 	"github.com/sidecus/raft/pkg/util"
 )
 
@@ -133,8 +133,8 @@ func fromRaftRVReply(resp *raft.RequestVoteReply) *pb.RequestVoteReply {
 
 // Converts a gRPC snapshot request to our own format
 // Snapshot file is left blank, need to be filled by the caller
-func toRaftSnapshotRequest(req *pb.SnapshotRequest) *raft.SnapshotRequest {
-	return &raft.SnapshotRequest{
+func toRaftSnapshotRequestHeader(req *pb.SnapshotRequest) *raft.SnapshotRequestHeader {
+	return &raft.SnapshotRequestHeader{
 		Term:          int(req.Term),
 		LeaderID:      int(req.LeaderID),
 		SnapshotIndex: int(req.SnapshotIndex),
@@ -144,13 +144,12 @@ func toRaftSnapshotRequest(req *pb.SnapshotRequest) *raft.SnapshotRequest {
 
 // This initiazes a gRPC snapshot request from the rkv request.
 // Note it doesn't fill in the data part - that should be done by the proxy by streaming req.File
-func fromRaftSnapshotRequest(req *raft.SnapshotRequest) *pb.SnapshotRequest {
+func fromRaftSnapshotRequestHeader(req *raft.SnapshotRequestHeader) *pb.SnapshotRequest {
 	return &pb.SnapshotRequest{
 		Term:          int64(req.Term),
 		LeaderID:      int64(req.LeaderID),
 		SnapshotIndex: int64(req.SnapshotIndex),
 		SnapshotTerm:  int64(req.SnapshotTerm),
-		Data:          []byte{},
 	}
 }
 
