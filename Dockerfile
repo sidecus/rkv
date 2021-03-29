@@ -5,12 +5,11 @@ FROM golang:alpine as build
 WORKDIR /app
 
 # Set go proxy...:(
-RUN go env -w GO111MODULE=on
-RUN go env -w GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
+RUN go env -w GO111MODULE=on && \
+    go env -w GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
 
 # Copy go.mod and go.sum first and download dependencies for better caching layer
-COPY go.mod .
-COPY go.sum .
+COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy all other files
